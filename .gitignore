@@ -1,0 +1,7 @@
+node_modules/
+server/static/
+web/dist/
+web/preview/
+.DS_Store
+*.log
+.thincoder/

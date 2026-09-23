@@ -1,0 +1,642 @@
+@import "tailwindcss";
+
+/* ============================================================
+   Claude 风格设计令牌
+   语义：<html class="dark"> = 深色；去掉 = 浅色。
+   组件统一用语义 class（bg-bg / bg-surface / border-line / text-t1…），
+   色阶在下方按主题重映射，组件无需感知主题。
+   配色取向：暖米白底 + 珊瑚陶土强调色 + 暖灰文字（Claude.ai）
+   ============================================================ */
+
+:root {
+  color-scheme: light;
+
+  /* 表面：暖米白，越靠上层越白 */
+  --bg: #faf9f5;
+  --bg-nav: #f0eee6;
+  --surface: #ffffff;
+  --surface-2: #f5f4ef;
+  --surface-3: #efede5;
+  --bubble-user: #f5f4ef;
+  --scrim: rgba(38, 38, 32, 0.32);
+
+  /* 文本：暖调近黑 → 暖灰 */
+  --t-body: #2c2b26;
+  --t1: #1f1e1b;
+  --t2: #3b3a34;
+  --t3: #6b6961;
+  --t4: #94908a;
+
+  /* 边框 / 悬浮 */
+  --line: #e7e4da;
+  --line-2: #d6d2c6;
+  --hover: #ebe8df;
+
+  /* 中性色阶（暖灰）：低阶=深字，高阶=浅底 */
+  --z50: #faf9f5;
+  --z100: #1f1e1b;
+  --z200: #2c2b26;
+  --z300: #4a4842;
+  --z400: #6b6961;
+  --z500: #94908a;
+  --z600: #b3aea5;
+  --z700: #d6d2c6;
+  --z800: #e7e4da;
+  --z900: #f0eee6;
+  --z950: #ffffff;
+
+  /* 强调色：Claude 珊瑚陶土 */
+  --accent: #c96442;
+  --accent-strong: #b2543a;
+  --accent-soft: #f4e4dc;
+  --accent-ring: rgba(201, 100, 66, 0.28);
+
+  /* amber 阶 → 陶土/沙色（沿用类名，视觉即主色） */
+  --amber-200: #8a4630;
+  --amber-300: #a8503a;
+  --amber-400: #c96442;
+  --amber-500: #d97757;
+  --amber-700: #d97757;
+  --amber-900: #f0dcd2;
+  --amber-950: #f8ece6;
+
+  /* emerald → 沉稳鼠尾草绿（成功态） */
+  --emerald-100: #3f6b52;
+  --emerald-200: #3f6b52;
+  --emerald-300: #4f7d61;
+  --emerald-400: #5f8f70;
+  --emerald-500: #6b9a7b;
+  --emerald-700: #6b9a7b;
+  --emerald-900: #dce9e0;
+  --emerald-950: #eaf2ec;
+
+  /* red → 赤陶红（错误态） */
+  --red-200: #8f3a2e;
+  --red-300: #a94534;
+  --red-400: #c25640;
+  --red-500: #d2644b;
+  --red-800: #e0a294;
+  --red-900: #f2ddd7;
+  --red-950: #f8ebe7;
+
+  /* sky → 雾蓝（信息态） */
+  --sky-300: #3f5f7d;
+  --sky-400: #5b7d9b;
+  --sky-500: #6d8fab;
+  --sky-700: #8aa6bd;
+  --sky-800: #8aa6bd;
+  --sky-950: #e6ecf1;
+
+  /* 细节元素 */
+  --link: #a8503a;
+  --code-bg: #f2f0e9;
+  --code-line: #e2dfd4;
+  --pre-bg: #f4f2ec;
+  --pre-line: #e3e0d6;
+  --table-head: #f5f4ef;
+  --table-line: #e7e4da;
+  --scroll: #d3cfc3;
+  --spin-track: #d6d2c6;
+
+  /* 字体：对齐 WorkBuddy / Trae 等客户端（Inter 优先，CJK 走 PingFang） */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "SF Mono", SFMono-Regular, ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+  /* 标题同样用无衬线（客户端风格：不使用衬线体） */
+  --font-serif: var(--font-sans);
+
+  /* 圆角与阴影（柔和、低对比） */
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 22px;
+  --shadow-xs: 0 1px 2px rgba(40, 36, 28, 0.05);
+  --shadow-sm: 0 1px 3px rgba(40, 36, 28, 0.07), 0 1px 2px rgba(40, 36, 28, 0.04);
+  --shadow-md: 0 4px 14px rgba(40, 36, 28, 0.08), 0 1px 3px rgba(40, 36, 28, 0.05);
+  --shadow-lg: 0 18px 44px rgba(40, 36, 28, 0.14), 0 2px 8px rgba(40, 36, 28, 0.06);
+}
+
+.dark {
+  color-scheme: dark;
+
+  /* 表面：暖调深炭，越靠上层越亮 */
+  --bg: #262624;
+  --bg-nav: #1f1e1c;
+  --surface: #30302e;
+  --surface-2: #2a2a28;
+  --surface-3: #232322;
+  /* 用户消息气泡：比背景亮一档，深色下清晰可辨 */
+  --bubble-user: #373634;
+  --scrim: rgba(0, 0, 0, 0.62);
+
+  --t-body: #d9d5cc;
+  --t1: #f5f3ee;
+  --t2: #e3e0d8;
+  --t3: #a8a49b;
+  --t4: #807c74;
+
+  --line: #3b3a37;
+  --line-2: #4d4b47;
+  --hover: #3a3936;
+
+  --z50: #faf9f5;
+  --z100: #f5f3ee;
+  --z200: #e3e0d8;
+  --z300: #c9c5bb;
+  --z400: #a8a49b;
+  --z500: #807c74;
+  --z600: #625f59;
+  --z700: #4d4b47;
+  --z800: #3b3a37;
+  --z900: #30302e;
+  --z950: #262624;
+
+  --accent: #d97757;
+  --accent-strong: #e08a6c;
+  --accent-soft: #3d2c25;
+  --accent-ring: rgba(217, 119, 87, 0.3);
+
+  --amber-200: #f0c0ab;
+  --amber-300: #e6a888;
+  --amber-400: #d97757;
+  --amber-500: #e08a6c;
+  --amber-700: #a8503a;
+  --amber-900: #45291f;
+  --amber-950: #3a231b;
+
+  --emerald-100: #c8dccf;
+  --emerald-200: #a9c9b5;
+  --emerald-300: #8db69b;
+  --emerald-400: #6b9a7b;
+  --emerald-500: #5f8f70;
+  --emerald-700: #3f6b52;
+  --emerald-900: #22322a;
+  --emerald-950: #1c2a23;
+
+  --red-200: #f0b5a5;
+  --red-300: #e09482;
+  --red-400: #d2644b;
+  --red-500: #c25640;
+  --red-800: #7a3225;
+  --red-900: #45241d;
+  --red-950: #3a1f19;
+
+  --sky-300: #b6cad9;
+  --sky-400: #8aa6bd;
+  --sky-500: #6d8fab;
+  --sky-700: #3f5f7d;
+  --sky-800: #2e475e;
+  --sky-950: #1e2a35;
+
+  --link: #e08a6c;
+  --code-bg: #33322f;
+  --code-line: #42413d;
+  --pre-bg: #2b2b29;
+  --pre-line: #3d3c38;
+  --table-head: #2c2c2a;
+  --table-line: #3d3c38;
+  --scroll: #4d4b47;
+  --spin-track: #4d4b47;
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.34), 0 1px 3px rgba(0, 0, 0, 0.22);
+  --shadow-lg: 0 18px 44px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* Tailwind 调色板 → 主题变量（inline：编译为 var()，随 .dark 切换） */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-nav: var(--bg-nav);
+  --color-surface: var(--surface);
+  --color-surface2: var(--surface-2);
+  --color-surface3: var(--surface-3);
+  --color-bubble: var(--bubble-user);
+  --color-scrim: var(--scrim);
+  --color-t1: var(--t1);
+  --color-t2: var(--t2);
+  --color-t3: var(--t3);
+  --color-t4: var(--t4);
+  --color-line: var(--line);
+  --color-line2: var(--line-2);
+  --color-hover: var(--hover);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-zinc-50: var(--z50);
+  --color-zinc-100: var(--z100);
+  --color-zinc-200: var(--z200);
+  --color-zinc-300: var(--z300);
+  --color-zinc-400: var(--z400);
+  --color-zinc-500: var(--z500);
+  --color-zinc-600: var(--z600);
+  --color-zinc-700: var(--z700);
+  --color-zinc-800: var(--z800);
+  --color-zinc-900: var(--z900);
+  --color-zinc-950: var(--z950);
+
+  --color-amber-200: var(--amber-200);
+  --color-amber-300: var(--amber-300);
+  --color-amber-400: var(--amber-400);
+  --color-amber-500: var(--amber-500);
+  --color-amber-700: var(--amber-700);
+  --color-amber-900: var(--amber-900);
+  --color-amber-950: var(--amber-950);
+  --color-emerald-100: var(--emerald-100);
+  --color-emerald-200: var(--emerald-200);
+  --color-emerald-300: var(--emerald-300);
+  --color-emerald-400: var(--emerald-400);
+  --color-emerald-500: var(--emerald-500);
+  --color-emerald-700: var(--emerald-700);
+  --color-emerald-900: var(--emerald-900);
+  --color-emerald-950: var(--emerald-950);
+  --color-red-200: var(--red-200);
+  --color-red-300: var(--red-300);
+  --color-red-400: var(--red-400);
+  --color-red-500: var(--red-500);
+  --color-red-800: var(--red-800);
+  --color-red-900: var(--red-900);
+  --color-red-950: var(--red-950);
+  --color-sky-300: var(--sky-300);
+  --color-sky-400: var(--sky-400);
+  --color-sky-500: var(--sky-500);
+  --color-sky-700: var(--sky-700);
+  --color-sky-800: var(--sky-800);
+  --color-sky-950: var(--sky-950);
+
+  --font-sans: var(--font-sans);
+  --font-serif: var(--font-serif);
+  --font-mono: var(--font-mono);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--t-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.55;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  text-rendering: optimizeLegibility;
+}
+
+/* 滚动条：细、暖、无边框 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scroll);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--line-2);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 键盘可达性：统一焦点环 */
+:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 1px;
+}
+
+/* 容器已用 focus-within 表达焦点态时（如对话输入框），
+   内部输入件不再叠加矩形焦点环。
+   注意：本规则必须写在 @layer 之外——未分层的规则优先级高于
+   Tailwind 的 @layer utilities，因此 textarea 上的 outline-none 类
+   会被上面的 :focus-visible 覆盖，只能在此处显式清除。 */
+.no-focus-ring:focus,
+.no-focus-ring:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+/* ---------- 通用小件 ---------- */
+
+/* 卡片：柔和描边 + 极浅阴影，Claude 的"纸感" */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
+}
+
+/* 分段控件（统一/并排、近 7 天/30 天、仅本机/局域网…） */
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+}
+.seg > button {
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--t3);
+  transition: background-color 0.15s, color 0.15s;
+}
+.seg > button:hover {
+  color: var(--t1);
+}
+.seg > button[data-on="true"] {
+  background: var(--surface);
+  color: var(--t1);
+  box-shadow: var(--shadow-xs);
+}
+
+/* 主按钮（珊瑚陶土） */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #fff;
+  font-weight: 500;
+  transition: background-color 0.15s, box-shadow 0.15s;
+  box-shadow: var(--shadow-xs);
+}
+.btn-primary:hover {
+  background: var(--accent-strong);
+}
+.btn-primary:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* 次级按钮 */
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+  color: var(--t2);
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+.btn-ghost:hover {
+  background: var(--hover);
+  border-color: var(--line-2);
+  color: var(--t1);
+}
+.btn-ghost:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+/* 输入件 */
+.field {
+  width: 100%;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+  color: var(--t1);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.field::placeholder {
+  color: var(--t4);
+}
+.field:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* ---------- Markdown 渲染（Claude 式阅读排版） ---------- */
+.md {
+  line-height: 1.72;
+  word-break: break-word;
+  color: var(--t-body);
+}
+.md > *:first-child {
+  margin-top: 0;
+}
+.md > *:last-child {
+  margin-bottom: 0;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  color: var(--t1);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  letter-spacing: -0.011em;
+  margin: 1.15em 0 0.45em;
+  line-height: 1.35;
+}
+.md h1 {
+  font-size: 1.28em;
+}
+.md h2 {
+  font-size: 1.16em;
+}
+.md h3 {
+  font-size: 1.04em;
+}
+.md h4 {
+  font-size: 1em;
+  font-weight: 600;
+}
+.md p {
+  margin: 0.6em 0;
+}
+.md ul,
+.md ol {
+  margin: 0.6em 0;
+  padding-left: 1.5em;
+}
+.md ul {
+  list-style: disc;
+}
+.md ol {
+  list-style: decimal;
+}
+.md li {
+  margin: 0.28em 0;
+}
+.md li::marker {
+  color: var(--t4);
+}
+.md a {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+.md a:hover {
+  text-decoration-thickness: 2px;
+}
+.md strong {
+  color: var(--t1);
+  font-weight: 600;
+}
+.md blockquote {
+  border-left: 2px solid var(--line-2);
+  padding-left: 1em;
+  color: var(--t3);
+  margin: 0.8em 0;
+  font-style: normal;
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--code-bg);
+  border: 1px solid var(--code-line);
+  border-radius: 5px;
+  padding: 0.1em 0.36em;
+  color: var(--t2);
+}
+.md pre {
+  position: relative;
+  background: var(--pre-bg);
+  border: 1px solid var(--pre-line);
+  border-radius: var(--radius);
+  padding: 0.9em 1.1em;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+/* 代码块右上角的复制按钮（由 Timeline 在渲染后注入） */
+.md-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+  color: var(--t3);
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+.md pre:hover .md-copy-btn,
+.md-copy-btn:focus-visible {
+  opacity: 1;
+}
+.md-copy-btn:hover {
+  color: var(--t1);
+}
+/* 消息悬停工具条上的小图标按钮（复制 / 回退） */
+.tool-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--t4);
+  transition: background-color 0.15s, color 0.15s;
+}
+.tool-btn:hover {
+  background: var(--hover);
+  color: var(--t1);
+}
+.md pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+  line-height: 1.6;
+  color: var(--t-body);
+}
+.md table {
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  font-size: 0.9em;
+  display: block;
+  overflow-x: auto;
+}
+.md th,
+.md td {
+  border: 1px solid var(--table-line);
+  padding: 0.4em 0.75em;
+}
+.md th {
+  background: var(--table-head);
+  color: var(--t1);
+  font-weight: 600;
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 1.2em 0;
+}
+
+/* 流式光标：珊瑚色细竖线 */
+.stream-cursor::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.14em;
+  background: var(--accent);
+  border-radius: 1px;
+  animation: blink 1.1s steps(2) infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* 运行中旋转点 */
+.spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 9999px;
+  border: 2px solid var(--spin-track);
+  border-top-color: var(--accent);
+  animation: spin 0.75s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 进场：轻淡上浮，避免生硬闪现 */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise {
+  animation: rise 0.22s ease-out both;
+}
