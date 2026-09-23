@@ -12,6 +12,9 @@
  */
 
 const REPO = "hzchrisfang/Thincoder-WebUI"
+// 公开仓 main 分支与 clone URL：版本检查与一键更新编排器（webui-apply.mjs）共用同一常量——检查与拉取永远同源
+export const REPO_BRANCH = "main"
+export { REPO }
 const OK_TTL_MS = 4 * 60 * 60 * 1000 // 成功缓存 4 小时
 const FAIL_TTL_MS = 5 * 60 * 1000 // 失败缓存 5 分钟
 const FETCH_TIMEOUT_MS = 5000

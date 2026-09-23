@@ -1,8 +1,18 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { api } from "../lib/api"
+import type { ServerEvent } from "../lib/types"
 import TMark from "./TMark"
 
 const GITHUB_URL = "https://github.com/hzchrisfang/Thincoder-WebUI"
+
+/** 一键更新任务状态（/api/webui-update-status 与 SSE 载荷共用的前端视图） */
+interface UpdateStatus {
+  state: "idle" | "running" | "ok" | "failed"
+  result: { version: string; at: number; skip?: boolean; message?: string } | null
+  failure: { step: string; message: string } | null
+  logTail: string[]
+  logTotal: number
+}
 
 /** GitHub octocat 轮廓标（Star 按钮用） */
 function GitHubMark({ className }: { className?: string }) {
@@ -13,7 +23,7 @@ function GitHubMark({ className }: { className?: string }) {
   )
 }
 
-/** 关于页 —— 单卡：标题行（版本 + 检查 + Star）+ 简介 + 底行（内核适配 + 检查 + 更新日志） */
+/** 关于页 —— 单卡：标题行（版本 + 检查 + Star）+ 简介 + 一键更新（0.8.0）+ 底行（内核适配 + 检查 + 更新日志） */
 export default function AboutPage() {
   const [ver, setVer] = useState<{ webui: string; thincoder: string | null } | null>(null)
   // 内核最新版检查（打开本页即查，服务端有缓存；失败静默原位显示）
@@ -34,6 +44,13 @@ export default function AboutPage() {
     error: string | null
     outdated: boolean
   } | null>(null)
+  // 一键半自动更新（0.8.0）：null=本进程从未跑过（不显示日志区）；
+  // 有值即展示（刷新页面/关掉重开后由 status 接口恢复最近一次任务的进度与日志）
+  const [upd, setUpd] = useState<UpdateStatus | null>(null)
+  const updRef = useRef<UpdateStatus | null>(null)
+  updRef.current = upd
+  // 日志区自动滚动到底
+  const logBoxRef = useRef<HTMLPreElement | null>(null)
 
   useEffect(() => {
     api.version().then(setVer).catch(() => {})
@@ -41,7 +58,73 @@ export default function AboutPage() {
     api.kernelUpdate().then(setKu).catch(() => {})
     setWu(null)
     api.webuiUpdate().then(setWu).catch(() => {})
+    // 恢复最近一次更新任务状态（页面刷新 / 关掉再回来）
+    api
+      .webuiUpdateStatus()
+      .then((s) => {
+        if (s.state !== "idle") setUpd({ ...s })
+      })
+      .catch(() => {})
   }, [])
+
+  // SSE 跟随 App.tsx 现有模式：组件自建 EventSource，按 type 过滤 webui_update 事件。
+  // 事件只带增量（phase/step/status/line），完整状态以 status 接口回读为准（进度/日志尾部）
+  useEffect(() => {
+    const es = new EventSource("/api/events")
+    es.onmessage = (e) => {
+      try {
+        const ev = JSON.parse(e.data) as ServerEvent
+        if (ev.type !== "webui_update") return
+        // 有事件流动说明任务活跃或刚结束：拉一次全量状态对齐（含日志尾部）
+        api
+          .webuiUpdateStatus()
+          .then((s) => setUpd({ ...s }))
+          .catch(() => {})
+      } catch {
+        /* 忽略坏事件 */
+      }
+    }
+    es.onerror = () => {
+      /* EventSource 自动重连 */
+    }
+    return () => es.close()
+  }, [])
+
+  // 日志追加时自动滚到底
+  useEffect(() => {
+    const box = logBoxRef.current
+    if (box) box.scrollTop = box.scrollHeight
+  }, [upd?.logTail.length, upd?.state])
+
+  /** 点「一键更新」：确认文案讲清三件事（编排内容/重启生效/期间勿动 git、npm） */
+  const applyUpdate = () => {
+    if (!wu?.latest) return
+    const ok = window.confirm(
+      `将更新到 v${wu.latest}，服务端将依次执行：\n\n` +
+        `1. 拉取公开仓新代码（git fetch + 快进合并）\n` +
+        `2. 安装依赖（会执行依赖包脚本）\n` +
+        `3. 重新构建前端并自动换入\n\n` +
+        `完成后需手动重启服务才生效（启动终端 Ctrl+C 后 npm start）。\n` +
+        `更新期间请勿在本机对 WebUI 目录执行任何 git / npm 操作。`
+    )
+    if (!ok) return
+    setUpd({ state: "running", result: null, failure: null, logTail: [], logTotal: 0 })
+    api
+      .webuiApplyUpdate()
+      .then(() => {
+        // 触发成功：立刻拉一次状态（任务已异步开跑）
+        api
+          .webuiUpdateStatus()
+          .then((s) => setUpd({ ...s }))
+          .catch(() => {})
+      })
+      .catch((e) => {
+        // 409 等失败：回到失败态展示
+        setUpd({ state: "failed", result: null, failure: { step: "触发", message: e.message }, logTail: [], logTotal: 0 })
+      })
+  }
+
+  const running = upd?.state === "running"
 
   return (
     <div className="mx-auto h-full max-w-3xl overflow-y-auto px-8 py-8">
@@ -58,8 +141,8 @@ export default function AboutPage() {
             v{ver?.webui ?? "…"}
           </span>
           {/* WebUI 自身最新版检查：小字不加粗、无括号——已是最新 / 有可用更新：vX.Y.Z；
-              检查中留空，失败/镜像滞后说明进悬停。口径同内核——中性事实陈述，
-              是否升级（npm i / git pull 后重新 npm run build）由用户自行评估 */}
+              检查中留空，失败/镜像滞后说明进悬停。口径同内核——中性事实陈述；
+              0.8.0 起 outdated 时旁边有一键更新按钮（服务端编排，完成后手动重启生效） */}
           {wu?.latest != null && (
             <span
               className={
@@ -67,7 +150,7 @@ export default function AboutPage() {
               }
               title={
                 wu.outdated
-                  ? `公开仓已发布 ${wu.latest}。更新需拉取新代码并重新构建（npm install → npm run build），请自行评估`
+                  ? `公开仓已发布 ${wu.latest}。可一键更新：自动拉取新代码、安装依赖并重新构建，完成后重启服务生效`
                   : wu.source === "jsdelivr"
                     ? "经 jsDelivr 镜像检查（缓存有滞后，结果可能偏旧）"
                     : undefined
@@ -78,6 +161,17 @@ export default function AboutPage() {
           )}
           {wu?.latest == null && wu?.error && (
             <span className="text-xs text-t4" title={`最新版检查失败：${wu.error}`} />
+          )}
+          {/* 一键更新按钮：outdated 时出现在检查小字旁；进步度态（运行中禁用） */}
+          {wu?.outdated && (
+            <button
+              onClick={applyUpdate}
+              disabled={running}
+              title={running ? "更新进行中，可在下方日志区查看进度" : "服务端自动拉取、安装依赖并重新构建"}
+              className="shrink-0 rounded-lg bg-accent px-2.5 py-1 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {running ? "更新中…" : "一键更新"}
+            </button>
           )}
           <span className="flex-1" />
           <a
@@ -110,6 +204,39 @@ export default function AboutPage() {
             交互上类似 Codex：你可以在本地或局域网的浏览器里，创建项目、和 Agent 对话、批准它调用工具、查看文件改动。
           </p>
         </div>
+
+        {/* 一键更新：成功绿色横幅（重启指引）/ 失败红色（步骤名+日志尾部）/ 进度日志区 */}
+        {upd && (
+          <div className="mt-3.5">
+            {upd.state === "ok" && upd.result && (
+              <div className="rounded-lg border border-emerald-900 bg-emerald-950 px-3.5 py-2.5 text-xs leading-relaxed text-emerald-300">
+                {upd.result.skip
+                  ? `已与远端一致（v${upd.result.version}），无需更新。`
+                  : `已更新到 v${upd.result.version}，重启服务后生效：在启动终端按 Ctrl+C 停止，再执行 npm start。`}
+              </div>
+            )}
+            {upd.state === "failed" && upd.failure && (
+              <div className="rounded-lg border border-red-900 bg-red-950 px-3.5 py-2.5 text-xs leading-relaxed text-red-300">
+                <span className="font-medium">更新失败（{upd.failure.step}）：</span>
+                {upd.failure.message}
+              </div>
+            )}
+            {/* 日志区：运行中实时滚动；结束后保留最近一次任务日志（环形缓冲尾部） */}
+            {upd.logTail.length > 0 && (
+              <pre
+                ref={logBoxRef}
+                className="mt-2 max-h-56 overflow-y-auto rounded-lg border border-line bg-bg px-3 py-2.5 font-mono text-[11px] leading-relaxed text-t4"
+              >
+                {upd.logTail.join("\n")}
+              </pre>
+            )}
+            {running && (
+              <p className="mt-1.5 text-[11px] text-t4">
+                更新进行中：拉取公开仓 → 安装依赖 → 重新构建 → 换入。期间请勿对本目录执行 git / npm 操作。
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="my-3 border-t border-line" />
 

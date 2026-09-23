@@ -23,6 +23,7 @@ import * as rewind from "./bridge/rewind.mjs"
 import { queryUsage, removeUsageByProject } from "./store/usage.mjs"
 import { checkKernelUpdate, compareVersions } from "./lib/kernel-update.mjs"
 import { checkWebuiUpdate } from "./lib/webui-update.mjs"
+import { startWebuiUpdate, webuiUpdateState } from "./lib/webui-apply.mjs"
 import * as jobsStore from "./store/jobs.mjs"
 import * as scheduler from "./bridge/scheduler.mjs"
 
@@ -784,6 +785,17 @@ async function handleApi(req, res, url) {
         error: u.error,
         outdated: !!(WEBUI_VERSION !== "unknown" && u.latest && compareVersions(u.latest, WEBUI_VERSION) > 0),
       })
+    }
+
+    // 一键半自动更新：触发编排（拉取→装依赖→构建→换入，进度走 SSE 与 status 接口）
+    if (p === "/api/webui-apply-update" && method === "POST") {
+      const r = startWebuiUpdate()
+      if (!r.started) return json(res, 409, { error: r.message, reason: r.reason })
+      return json(res, 202, { ok: true })
+    }
+    // 当前/最近一次更新任务状态 + 日志尾部（页面刷新或重开页面后恢复进度显示）
+    if (p === "/api/webui-update-status" && method === "GET") {
+      return json(res, 200, webuiUpdateState())
     }
 
     json(res, 404, { error: `未知接口 ${method} ${p}` })

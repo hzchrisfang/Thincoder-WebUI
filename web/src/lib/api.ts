@@ -196,6 +196,20 @@ export const api = {
       error: string | null
       outdated: boolean
     }>("/api/webui-update"),
+  /** 一键半自动更新：触发服务端编排（拉取公开仓 → 装依赖 → 重建 → 换入）；运行中重复触发 409 */
+  webuiApplyUpdate: () => request<{ ok: boolean }>("/api/webui-apply-update", { method: "POST", body: "{}" }),
+  /** 当前/最近一次更新任务状态 + 日志尾部（刷新页面后恢复进度显示用） */
+  webuiUpdateStatus: () =>
+    request<{
+      state: "idle" | "running" | "ok" | "failed"
+      current: { step: string; status: string; line?: string } | null
+      result: { version: string; at: number; skip?: boolean; message?: string } | null
+      failure: { step: string; message: string } | null
+      logTail: string[]
+      logTotal: number
+      startedAt: number | null
+      finishedAt: number | null
+    }>("/api/webui-update-status"),
   /** 斜线命令：服务端执行内核 TUI 处理器，返回其输出行（见 lib/commands.ts） */
   command: (project: string, command: string, args: string[] = []) =>
     request<{ ok: boolean; lines: string[] }>("/api/command", {
