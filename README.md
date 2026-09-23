@@ -27,14 +27,17 @@
 
 ## 环境要求
 
-- **Node.js ≥ 22**
+- **Node.js ≥ 22.5**
 - [thincoder](https://gitee.com/shanghai-xinbo/thincoder) 内核（通过 npm 依赖自动安装，无需全局安装）
 - 现代浏览器（Chrome / Edge / Safari / Firefox 均可）
 
 ## 快速开始
 
 ```bash
-# 1. 安装依赖（含 thincoder 内核，postinstall 会自动给内核打一个兼容补丁）
+git clone https://github.com/hzchrisfang/Thincoder-WebUI.git
+cd Thincoder-WebUI
+
+# 1. 安装依赖（含 thincoder 内核与前端构建依赖，postinstall 会自动给内核打一个兼容补丁）
 npm install
 
 # 2. 构建前端（产物输出到 server/static）

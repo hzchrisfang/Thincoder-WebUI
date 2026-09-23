@@ -1,6 +1,7 @@
 {
   "name": "thincoder-webui",
-  "version": "0.7.0",
+  "private": true,
+  "version": "0.7.1",
   "description": "Codex 式 Web 客户端 for thincoder —— 零依赖 Node 桥接层 + 浏览器工作台",
   "type": "module",
   "engines": {
@@ -13,7 +14,7 @@
     "start": "node server/index.mjs",
     "build": "npm --prefix web run build",
     "dev": "node scripts/dev.mjs",
-    "postinstall": "node scripts/patch-core.mjs"
+    "postinstall": "npm --prefix web install --include=dev && node scripts/patch-core.mjs"
   },
   "license": "MIT"
 }
