@@ -45,7 +45,7 @@ const parseHeaders = (text: string) =>
     return i < 0 ? { key: line, value: "" } : { key: line.slice(0, i).trim(), value: line.slice(i + 1).trim() }
   })
 
-const short = (p: string) => p.split("/").filter(Boolean).pop() ?? p
+const short = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p
 
 /** 实例池应用结果 → 一行人类可读文本 */
 function resultText(results: McpOpResult[]): string {

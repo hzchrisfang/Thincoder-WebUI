@@ -186,6 +186,16 @@ export const api = {
       error: string | null
       outdated: boolean
     }>("/api/kernel-update"),
+  /** WebUI 自身最新版检查（公开 GitHub 仓 main 分支 package.json）——缓存策略同 kernelUpdate */
+  webuiUpdate: () =>
+    request<{
+      installed: string
+      latest: string | null
+      source: string | null
+      checkedAt: number
+      error: string | null
+      outdated: boolean
+    }>("/api/webui-update"),
   /** 斜线命令：服务端执行内核 TUI 处理器，返回其输出行（见 lib/commands.ts） */
   command: (project: string, command: string, args: string[] = []) =>
     request<{ ok: boolean; lines: string[] }>("/api/command", {

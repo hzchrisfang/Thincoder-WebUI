@@ -1,10 +1,10 @@
 {
   "name": "thincoder-webui",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Codex 式 Web 客户端 for thincoder —— 零依赖 Node 桥接层 + 浏览器工作台",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.5"
   },
   "dependencies": {
     "thincoder": "^0.12.66"

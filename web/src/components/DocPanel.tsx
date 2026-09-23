@@ -26,7 +26,7 @@ export const isPreviewable = (p: string) => kindOf(p) !== null
 
 const KIND_LABEL: Record<PreviewKind, string> = { image: "图片", web: "网页", md: "Markdown" }
 
-const baseName = (p: string) => p.split("/").filter(Boolean).pop() ?? p
+const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() ?? p
 
 /** 右侧面板：文档预览（图片 / 网页沙盒 / Markdown 渲染） */
 export default function DocPanel({ project, files, onClose }: Props) {

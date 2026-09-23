@@ -12,9 +12,9 @@ interface Props {
   onAnswer: (reqId: string, answer: string) => void
 }
 
-const BASE_NAME = (n: string) => (n.includes("/") ? n.split("/").pop()! : n)
-/** 项目目录 → 短名（弹窗徽标用） */
-const PROJECT_NAME = (dir: string) => dir.split("/").filter(Boolean).pop() ?? dir
+const BASE_NAME = (n: string) => (/[\\/]/.test(n) ? n.split(/[\\/]/).pop()! : n)
+/** 项目目录 → 短名（弹窗徽标用；双分隔符兼容 Windows 反斜杠） */
+const PROJECT_NAME = (dir: string) => dir.split(/[\\/]/).filter(Boolean).pop() ?? dir
 
 export default function Modals({ req, queueCount, currentProject, onDecide, onAnswer }: Props) {
   const [remember, setRemember] = useState(false)

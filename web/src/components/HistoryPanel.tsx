@@ -21,7 +21,7 @@ interface Props {
 
 /** 仅显示最后一个子目录名；完整路径由调用处的 title 提供悬浮提示 */
 const short = (dir: string) => {
-  const parts = dir.split("/").filter(Boolean)
+  const parts = dir.split(/[\\/]/).filter(Boolean)
   return parts.length ? parts[parts.length - 1] : dir
 }
 

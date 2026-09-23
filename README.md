@@ -1,8 +1,10 @@
-# thincoder-webui
+# Thincoder-WebUI
 
-**Codex 式 Web 客户端 for [thincoder](https://gitee.com/shanghai-xinbo/thincoder)** —— 在本地或局域网的浏览器里与 thincoder 编码 agent 对话、审批工具调用、审阅文件变更。
+一款基于 [Thincoder](https://gitee.com/shanghai-xinbo/thincoder) 的 Web 客户端，遵循一个朴素的愿景：简洁、方便、好用。
 
-> **项目理念：简洁与方便。** 这是一个自用工具长成的开源项目——只做高频核心功能，把它们做透、做顺手；不常用的一律不堆砌。如果你也在找一个「打开浏览器就能盯着 agent 干活」的轻量工作台，它应该正合适。
+交互上类似 Codex：你可以在本地或局域网的浏览器里，创建项目、和 Agent 对话、批准它调用工具、查看文件改动。
+
+> **项目理念：** 这个项目最初只是自用的工具，后来慢慢做成了开源项目。原则很简单：只做高频、核心的功能，并把它们做扎实、做顺手；不常用的功能，不硬塞、不堆砌。如果你也在找一个「打开浏览器就能盯着 agent 干活」的轻量工作台，它应该正合适。
 
 ## 项目背景
 
@@ -64,4 +66,4 @@ cat ~/.thincoder-webui/token
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE) —— 可自由使用、修改、商用，唯一要求是分发时保留原始的版权声明与许可证文本；软件按「现状」提供，不含任何担保（详见上方免责声明）。

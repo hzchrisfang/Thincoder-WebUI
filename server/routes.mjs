@@ -2,7 +2,7 @@
  * routes.mjs — HTTP 路由分发：登录 / REST API / SSE / 静态托管（零依赖）
  */
 
-import { join, resolve, normalize, extname, dirname } from "node:path"
+import { join, resolve, normalize, extname, dirname, relative, isAbsolute, sep } from "node:path"
 import { readFile, stat, open } from "node:fs/promises"
 import { existsSync, readdirSync, realpathSync, statSync, readFileSync } from "node:fs"
 import { homedir, networkInterfaces } from "node:os"
@@ -22,6 +22,7 @@ import * as gitm from "./bridge/git.mjs"
 import * as rewind from "./bridge/rewind.mjs"
 import { queryUsage, removeUsageByProject } from "./store/usage.mjs"
 import { checkKernelUpdate, compareVersions } from "./lib/kernel-update.mjs"
+import { checkWebuiUpdate } from "./lib/webui-update.mjs"
 import * as jobsStore from "./store/jobs.mjs"
 import * as scheduler from "./bridge/scheduler.mjs"
 
@@ -249,8 +250,11 @@ async function handleApi(req, res, url) {
       if (!runner.isKnownProject(dir)) return json(res, 403, { error: "项目未在白名单中" })
       const rel = String(url.searchParams.get("path") ?? "")
       const abs = resolve(dir, rel)
-      // 防路径穿越：解析后的绝对路径必须仍在项目目录内
-      if (abs !== dir && !abs.startsWith(dir.endsWith("/") ? dir : dir + "/")) {
+      // 防路径穿越：relative 判定（前缀 startsWith 在 Windows 反斜杠分隔符下失效）——
+      // abs 不在 dir 下时 relative 返回 ".."/".."+sep 开头或绝对路径；abs === dir（请求目录本身）也拒。
+      // 注意用 ".."+sep 而非裸 startsWith("..")：后者会把 "..config" 这类合法文件误杀
+      const relCheck = relative(dir, abs)
+      if (relCheck === "" || relCheck === ".." || relCheck.startsWith(".." + sep) || isAbsolute(relCheck)) {
         return json(res, 403, { error: "路径越界" })
       }
       try {
@@ -769,6 +773,19 @@ async function handleApi(req, res, url) {
       })
     }
 
+    // WebUI 自身最新版检查（查公开 GitHub 仓 main 分支 package.json；缓存策略同 kernel-update）
+    if (p === "/api/webui-update" && method === "GET") {
+      const u = await checkWebuiUpdate()
+      return json(res, 200, {
+        installed: WEBUI_VERSION,
+        latest: u.latest,
+        source: u.source,
+        checkedAt: u.checkedAt,
+        error: u.error,
+        outdated: !!(WEBUI_VERSION !== "unknown" && u.latest && compareVersions(u.latest, WEBUI_VERSION) > 0),
+      })
+    }
+
     json(res, 404, { error: `未知接口 ${method} ${p}` })
   } catch (err) {
     json(res, 500, { error: err?.message ?? String(err) })
@@ -814,7 +831,7 @@ async function serveStatic(req, res, url) {
 function normalizePath(p) {
   if (!p || typeof p !== "string") return null
   try {
-    const abs = resolve(p.startsWith("~") ? join(process.env.HOME ?? "", p.slice(1)) : p)
+    const abs = resolve(p.startsWith("~") ? join(homedir(), p.slice(1)) : p)
     return existsSync(abs) ? realpathSync(abs) : abs
   } catch {
     return null

@@ -138,7 +138,7 @@ export default function JobsPage({ projects, refreshTick }: Props) {
   }
 
   const short = (d: string) => {
-    const parts = d.split("/")
+    const parts = d.split(/[\\/]/)
     return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : d
   }
 

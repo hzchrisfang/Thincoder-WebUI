@@ -12,7 +12,14 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const children = []
 
 function start(name, cmd, cwdArgs) {
-  const child = spawn(cmd.name, cmd.args, { cwd: cwdArgs.cwd, stdio: "inherit", env: process.env })
+  // Windows：npm/npx 是 .cmd 批处理，裸 spawn 无 shell 拉不起（ENOENT）——改走 cmd /c；
+  // POSIX 直接数组 argv，不经 shell（与 server 其余子进程先例一致）
+  const isWin = process.platform === "win32"
+  const child = spawn(
+    isWin ? process.env.comspec || "cmd.exe" : cmd.name,
+    isWin ? ["/d", "/s", "/c", cmd.name, ...cmd.args] : cmd.args,
+    { cwd: cwdArgs.cwd, stdio: "inherit", env: process.env, windowsVerbatimArguments: isWin },
+  )
   child.on("exit", (code) => {
     console.log(`\n[dev] ${name} 退出（code=${code}），收尾…`)
     shutdown()
@@ -25,7 +32,14 @@ function shutdown() {
   if (shuttingDown) return
   shuttingDown = true
   for (const c of children) {
-    try { c.kill("SIGTERM") } catch { /* 已退出 */ }
+    try {
+      // Windows：SIGTERM 几乎不送达控制台进程组，且 cmd /c 包装会留下孤儿孙进程——整树杀
+      if (process.platform === "win32" && c.pid) {
+        spawn("taskkill", ["/pid", String(c.pid), "/T", "/F"], { stdio: "ignore" })
+      } else {
+        c.kill("SIGTERM")
+      }
+    } catch { /* 已退出 */ }
   }
   setTimeout(() => process.exit(0), 1500).unref()
 }

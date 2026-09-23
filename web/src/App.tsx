@@ -682,7 +682,7 @@ export default function App() {
 
   /** 移除项目：移出历史面板并清除该项目在 thincoder 中的会话历史（目录内文件保留） */
   const removeProject = async (dir: string) => {
-    const name = dir.split("/").filter(Boolean).pop() ?? dir
+    const name = dir.split(/[\\/]/).filter(Boolean).pop() ?? dir
     if (
       !window.confirm(
         `移除项目「${name}」？\n\n目录内的所有文件都会保留；仅删除 thincoder 中该项目的会话历史（当前会话、归档、回退点、用量记录），且不可恢复。\n引用该目录的定时任务将失效，可在任务页删除。`

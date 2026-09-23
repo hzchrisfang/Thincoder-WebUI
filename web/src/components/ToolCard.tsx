@@ -2,7 +2,7 @@ import type { ToolCardData } from "../lib/types"
 
 /** 按工具名生成一行摘要（对齐 bin 的 formatPermission 风格） */
 export function argSummary(name: string, args: Record<string, unknown>): string {
-  const base = name.includes("/") ? name.split("/").pop()! : name
+  const base = /[\\/]/.test(name) ? name.split(/[\\/]/).pop()! : name
   const s = (k: string) => (typeof args[k] === "string" ? (args[k] as string) : "")
   switch (base) {
     case "bash":

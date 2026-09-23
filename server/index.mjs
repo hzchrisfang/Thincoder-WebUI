@@ -60,11 +60,19 @@ server.listen(PORT, HOST, () => {
 `)
   // M4：启动定时任务调度（持久化任务；停机期间到点的会在首个 tick 补跑）
   startScheduler()
-  if (!NO_OPEN && process.platform === "darwin") {
+  if (!NO_OPEN) {
     try {
-      const child = spawn("open", [login], { stdio: "ignore", detached: true })
-      child.on("error", () => { /* 打不开浏览器就算了 */ })
-      child.unref()
+      // 自动开登录页：darwin `open`；win32 `start` 是 cmd 内建（"" 是窗口标题占位参数）
+      const child =
+        process.platform === "darwin"
+          ? spawn("open", [login], { stdio: "ignore", detached: true })
+          : process.platform === "win32"
+            ? spawn(process.env.comspec || "cmd.exe", ["/d", "/s", "/c", "start", "", login], { stdio: "ignore", detached: true, windowsVerbatimArguments: true })
+            : null
+      if (child) {
+        child.on("error", () => { /* 打不开浏览器就算了 */ })
+        child.unref()
+      }
     } catch { /* 同上 */ }
   }
 })
