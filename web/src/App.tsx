@@ -94,7 +94,7 @@ export default function App() {
   const [subagents, setSubagents] = useState<SubagentItem[]>([])
   // M2
   const [planMode, setPlanMode] = useState(false)
-  const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null)
+  const [prefill, setPrefill] = useState<{ text: string } | null>(null)
   // 一轮结束后自动生成的追问建议（服务端旁路生成；纯前端临时态，不落盘）
   const [suggests, setSuggests] = useState<string[]>([])
   // 递增即作废在途请求：清空 / 切项目 / 新回合都 +1，晚到的回包再也写不进来（防串台）
@@ -301,7 +301,7 @@ export default function App() {
         break
       }
       case "tool_call": {
-        streamIdRef.current = null
+        closeStream() // 被工具调用取代的正文段就此定稿：裸清空流指针会让它永远 done:false（竖线长亮）
         pushItem({
           kind: "tool",
           id: uid(),
@@ -387,7 +387,7 @@ export default function App() {
         if (startedAt && Date.now() - startedAt >= LONG_TASK_MS) playSound("done")
         setRunning(false)
         setQueued(Number(ev.queued ?? 0))
-        streamIdRef.current = null
+        closeStream() // 本轮正文定稿（收尾事件正常已闭合；此处兜底同一语义）
         // 一轮收尾：落一条总结（完成时间 + 该轮 token 消耗）
         pushItem({
           kind: "runEnd",
@@ -583,7 +583,7 @@ export default function App() {
     setRunning(Boolean(busyMapRef.current[dir]))
     setQueued(0)
     commit([])
-    streamIdRef.current = null
+    closeStream() // 切项目：时间线已清空，流指针一并了结（不留 done:false 残条）
     // pending 不清：审批/提问弹窗是全局的（跨项目可见），切项目后仍在等待的项目弹窗要保留
     setTasks([])
     setSubagents([]) // 切项目：上一个项目的子代理进度不带过去（等着本项目的广播/快照）
@@ -607,7 +607,7 @@ export default function App() {
       .history(dir)
       .then((r) => {
         if (projectRef.current !== dir) return
-        streamIdRef.current = null
+        closeStream() // 水合会整体替换时间线：先把在途那段落定（失败路径不进这里，残条由收尾事件兜底）
         commit(r.items)
         after?.()
       })
@@ -710,7 +710,7 @@ export default function App() {
           setRunning(false)
           setQueued(0)
           commit([])
-          streamIdRef.current = null
+          closeStream()
           setPending([])
           setTasks([])
           setSubagents([])
@@ -735,7 +735,7 @@ export default function App() {
     setRollback(null)
     if (Array.isArray(summary.tasks)) setTasks(summary.tasks.map((t) => ({ title: t.title, status: t.status })))
     if (typeof summary.planMode === "boolean") setPlanMode(summary.planMode)
-    if (restoreToInput && text) setPrefill({ text, nonce: Date.now() })
+    if (restoreToInput && text) setPrefill({ text })
     const dir = projectRef.current
     if (dir) void syncRewindIds(dir)
   }
@@ -753,7 +753,7 @@ export default function App() {
   // ---------- 方案卡操作（M2） ----------
 
   const approvePlan = () => send("批准该方案，请按方案开始实施")
-  const adjustPlan = () => setPrefill({ text: "请调整方案：", nonce: Date.now() })
+  const adjustPlan = () => setPrefill({ text: "请调整方案：" })
 
   // ---------- 操作 ----------
 
@@ -1019,7 +1019,7 @@ export default function App() {
                       onRollback={(it) => setRollback(it)}
                       onUndoRewind={undoRewind}
                       suggests={suggests}
-                      onPickSuggest={(t) => setPrefill({ text: t, nonce: Date.now() })}
+                      onPickSuggest={(t) => setPrefill({ text: t })}
                     />
                   )}
                 </main>
@@ -1033,7 +1033,7 @@ export default function App() {
                   queued={queued}
                   onSubmit={send}
                   onAbort={stop}
-                  prefill={prefill}
+                  prefill={prefill} onPrefillTaken={() => setPrefill(null)}
                 />
               </div>
 
@@ -1059,7 +1059,14 @@ export default function App() {
       </div>
 
       {pending.length > 0 && (
-        <Modals req={pending[0]} queueCount={pending.length} currentProject={project} onDecide={onDecide} onAnswer={onAnswer} />
+        <Modals
+          key={pending[0].reqId}
+          req={pending[0]}
+          queueCount={pending.length}
+          currentProject={project}
+          onDecide={onDecide}
+          onAnswer={onAnswer}
+        />
       )}
 
       {rollback && project && (

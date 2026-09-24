@@ -10,11 +10,13 @@ interface Props {
   queued: number
   onSubmit: (text: string) => void
   onAbort: () => void
-  prefill?: { text: string; nonce: number } | null
+  prefill?: { text: string } | null
+  /** 预填是「一次性交接」：取用后立刻通知父层清空，否则下次挂载会把过期文本重新倒进输入框 */
+  onPrefillTaken: () => void
 }
 
 /** 输入区：Claude 风格 —— 圆润浮起输入框 + 珊瑚色发送键；键入 / 弹出斜线命令菜单 */
-export default function Composer({ disabled, disabledReason, running, queued, onSubmit, onAbort, prefill }: Props) {
+export default function Composer({ disabled, disabledReason, running, queued, onSubmit, onAbort, prefill, onPrefillTaken }: Props) {
   const [text, setText] = useState("")
   const [menuOpen, setMenuOpen] = useState(true)
   const [sel, setSel] = useState(0)
@@ -40,13 +42,37 @@ export default function Composer({ disabled, disabledReason, running, queued, on
     })
   }
 
-  // 方案卡「需要调整」等场景的输入框预填
+  // 方案卡「需要调整」/ 点建议卡 / 回退回填的输入框预填。**一次性交接**：取用后立刻让父层清掉 prefill——
+  // 这个 effect 在挂载时也会跑，父层若留着旧值，切走视图再回来（输入框重挂）就会把早已过期的文本重放进来
   useEffect(() => {
-    if (prefill) {
-      setText(prefill.text)
-      ref.current?.focus()
+    if (!prefill) return
+    setText(prefill.text)
+    ref.current?.focus()
+    onPrefillTaken()
+  }, [prefill]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 受控 textarea 的唯一事实源是 state：DOM 值若被外部改写（浏览器表单态恢复 / 自动填充等），
+  // React 只在「渲染值变化」时才写 DOM，不会自愈——每次渲染后与窗口回焦/可见时各对齐一次
+  const textRef = useRef(text)
+  const syncDom = () => {
+    const el = ref.current
+    if (el && el.value !== textRef.current) el.value = textRef.current
+  }
+  useEffect(() => {
+    textRef.current = text
+    syncDom()
+  })
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") syncDom()
     }
-  }, [prefill?.nonce]) // eslint-disable-line react-hooks/exhaustive-deps
+    window.addEventListener("focus", syncDom)
+    document.addEventListener("visibilitychange", onVisible)
+    return () => {
+      window.removeEventListener("focus", syncDom)
+      document.removeEventListener("visibilitychange", onVisible)
+    }
+  }, [])
 
   // 随内容自适应高度（Claude 式：输入越长，框越高）
   useEffect(() => {

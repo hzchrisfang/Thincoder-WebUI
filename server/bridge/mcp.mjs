@@ -390,7 +390,10 @@ export async function flushDirty(project) {
   const all = t.config.loadConfig().mcp?.servers ?? []
   const absorb = prefs.absorbNewServers(all.map((s) => s.name), project)
   const entry = poolEntries().get(project)
-  if (!entry?._mcpDirty && !absorb.adopted.length) return []
+  // 先判「无实例」：entry 不在池里就没有可 resync 的实例（收养已在上方落盘），直接早退。
+  // 别把「无实例」和「无变更」合成一个条件——`!entry?._mcpDirty && !absorb.adopted.length` 这写法在有收养时
+  // 会带着 undefined 的 entry 穿过守卫（absorb 分支破掉了「能到下一行 ⇒ entry 存在」的隐含前提）。
+  if (!entry || (!entry._mcpDirty && !absorb.adopted.length)) return []
   entry._mcpDirty = false
   const results = await resyncEntry(t, project, entry)
   emit("flush", null, results)
