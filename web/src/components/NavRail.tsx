@@ -1,4 +1,5 @@
 import TMark from "./TMark"
+import Tooltip from "./Tooltip"
 export type View = "chat" | "jobs" | "usage" | "git" | "mcp" | "settings" | "about"
 
 interface Props {
@@ -18,7 +19,7 @@ const ICONS: Record<View | "sun" | "moon", React.ReactNode> = {
       <path d="M14.5 8.2c0 3-2.9 5.4-6.5 5.4-.7 0-1.4-.1-2-.3L3.5 14.5l.6-2.3A5.2 5.2 0 0 1 1.5 8.2C1.5 5.2 4.4 2.8 8 2.8s6.5 2.4 6.5 5.4z" />
     </>
   ),
-  // 任务：时钟
+  // 定时任务：时钟
   jobs: (
     <>
       <circle cx="8" cy="8" r="6.2" />
@@ -72,9 +73,9 @@ const ICONS: Record<View | "sun" | "moon", React.ReactNode> = {
   moon: <path d="M13.2 9.4A5.6 5.6 0 0 1 6.6 2.8a5.6 5.6 0 1 0 6.6 6.6z" />,
 }
 
-const ITEMS: { id: View; label: string }[] = [
+const ITEMS: { id: View; label: string; tip?: string }[] = [
   { id: "chat", label: "对话" },
-  { id: "jobs", label: "任务" },
+  { id: "jobs", label: "定时", tip: "定时任务" },
   { id: "usage", label: "用量" },
   { id: "git", label: "Git" },
   { id: "mcp", label: "MCP" },
@@ -99,51 +100,54 @@ function Icon({ name }: { name: View | "sun" | "moon" }) {
   )
 }
 
-/** 左侧导航轨：Claude 风格暖色侧栏（任务完成通知点 + 主题切换） */
+/** 左侧导航轨：Claude 风格暖色侧栏（定时任务完成通知点 + 主题切换） */
 export default function NavRail({ view, onChange, busy, jobNotice, theme, onToggleTheme }: Props) {
   return (
     <nav className="flex w-[68px] shrink-0 flex-col items-center gap-1 border-r border-line bg-nav py-4">
-      <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-xl bg-accent shadow-xs" title="thincoder-webui">
-        {/* 主 logo：白色 T 字（与启动页 / favicon / 对话空态一致） */}
-        <TMark className="h-[20px] w-[20px] text-white" />
-      </div>
+      <Tooltip label="thincoder-webui" side="right" className="mb-3">
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent shadow-xs">
+          {/* 主 logo：白色 T 字（与启动页 / favicon / 对话空态一致） */}
+          <TMark className="h-[20px] w-[20px] text-white" />
+        </div>
+      </Tooltip>
 
       {ITEMS.map((it) => {
         const on = view === it.id
         return (
-          <button
-            key={it.id}
-            onClick={() => onChange(it.id)}
-            title={it.label}
-            aria-current={on ? "page" : undefined}
-            className={`relative flex h-[52px] w-[52px] flex-col items-center justify-center gap-1 rounded-xl transition-colors ${
-              on ? "bg-surface text-accent shadow-xs" : "text-t4 hover:bg-hover hover:text-t2"
-            }`}
-          >
-            <Icon name={it.id} />
-            <span className="text-xs leading-none tracking-tight">{it.label}</span>
-            {it.id === "chat" && busy && (
-              <span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            )}
-            {it.id === "jobs" && jobNotice > 0 && (
-              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-xs font-semibold leading-none text-white">
-                {jobNotice > 9 ? "9+" : jobNotice}
-              </span>
-            )}
-          </button>
+          <Tooltip key={it.id} label={it.tip ?? it.label} side="right" className="rounded-xl">
+            <button
+              onClick={() => onChange(it.id)}
+              aria-current={on ? "page" : undefined}
+              className={`relative flex h-[52px] w-[52px] flex-col items-center justify-center gap-1 rounded-xl transition-colors ${
+                on ? "bg-surface text-accent shadow-xs" : "text-t4 hover:bg-hover hover:text-t2"
+              }`}
+            >
+              <Icon name={it.id} />
+              <span className="text-xs leading-none tracking-tight">{it.label}</span>
+              {it.id === "chat" && busy && (
+                <span className="absolute right-2 top-2 h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              )}
+              {it.id === "jobs" && jobNotice > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-xs font-semibold leading-none text-white">
+                  {jobNotice > 9 ? "9+" : jobNotice}
+                </span>
+              )}
+            </button>
+          </Tooltip>
         )
       })}
 
       <div className="flex-1" />
 
-      <button
-        onClick={onToggleTheme}
-        title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
-        className="flex h-[52px] w-[52px] flex-col items-center justify-center gap-1 rounded-xl text-t4 transition-colors hover:bg-hover hover:text-t2"
-      >
-        <Icon name={theme === "dark" ? "sun" : "moon"} />
-        <span className="text-xs leading-none">{theme === "dark" ? "浅色" : "深色"}</span>
-      </button>
+      <Tooltip label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"} side="right">
+        <button
+          onClick={onToggleTheme}
+          className="flex h-[52px] w-[52px] flex-col items-center justify-center gap-1 rounded-xl text-t4 transition-colors hover:bg-hover hover:text-t2"
+        >
+          <Icon name={theme === "dark" ? "sun" : "moon"} />
+          <span className="text-xs leading-none">{theme === "dark" ? "浅色" : "深色"}</span>
+        </button>
+      </Tooltip>
     </nav>
   )
 }

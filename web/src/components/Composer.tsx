@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { SLASH_COMMANDS, type SlashCommand } from "../lib/commands"
+import DirPicker from "./DirPicker"
+import Tooltip from "./Tooltip"
 
 interface Props {
   disabled: boolean
@@ -17,6 +19,26 @@ export default function Composer({ disabled, disabledReason, running, queued, on
   const [menuOpen, setMenuOpen] = useState(true)
   const [sel, setSel] = useState(0)
   const ref = useRef<HTMLTextAreaElement>(null)
+  const [pickingFile, setPickingFile] = useState(false)
+
+  // 「＋」选文件后把绝对路径插到光标处（含空格的路径加引号）
+  const insertPath = (p: string) => {
+    setPickingFile(false)
+    const snippet = (/\s/.test(p) ? `"${p}"` : p) + " "
+    const el = ref.current
+    if (!el) {
+      setText((t) => t + snippet)
+      return
+    }
+    const start = el.selectionStart ?? el.value.length
+    const end = el.selectionEnd ?? start
+    setText(el.value.slice(0, start) + snippet + el.value.slice(end))
+    const pos = start + snippet.length
+    requestAnimationFrame(() => {
+      el.focus()
+      el.setSelectionRange(pos, pos)
+    })
+  }
 
   // 方案卡「需要调整」等场景的输入框预填
   useEffect(() => {
@@ -106,6 +128,19 @@ export default function Composer({ disabled, disabledReason, running, queued, on
             disabled ? "border-line opacity-70" : "border-line2 shadow-sm focus-within:border-accent focus-within:shadow-md"
           }`}
         >
+          <Tooltip label="插入文件路径（从磁盘选文件）">
+            <button
+              onClick={() => setPickingFile(true)}
+              disabled={disabled}
+              aria-label="插入文件路径（从磁盘选文件）"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-t3 transition-colors hover:bg-hover hover:text-t1 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <svg viewBox="0 0 16 16" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                <path d="M8 3.5v9M3.5 8h9" />
+              </svg>
+            </button>
+          </Tooltip>
+
           <textarea
             ref={ref}
             value={text}
@@ -153,16 +188,19 @@ export default function Composer({ disabled, disabledReason, running, queued, on
               停止{queued > 0 ? ` · ${queued}` : ""}
             </button>
           ) : (
-            <button
-              onClick={submit}
-              disabled={disabled || !text.trim()}
-              title="发送（Enter）"
-              className="btn-primary h-9 w-9 shrink-0 rounded-full !px-0 text-base"
-            >
-              ↑
-            </button>
+            <Tooltip label="发送（Enter）">
+              <button
+                onClick={submit}
+                disabled={disabled || !text.trim()}
+                className="btn-primary h-9 w-9 shrink-0 rounded-full !px-0 text-base"
+              >
+                ↑
+              </button>
+            </Tooltip>
           )}
         </div>
+
+        {pickingFile && <DirPicker mode="file" onClose={() => setPickingFile(false)} onPick={insertPath} />}
 
         <div className="mt-2 flex items-center justify-center gap-1.5 text-xs text-t4">
           <span>Enter 发送 · Shift+Enter 换行</span>

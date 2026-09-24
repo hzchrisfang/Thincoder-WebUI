@@ -5,6 +5,7 @@ import { copyText } from "../lib/clipboard"
 import ToolCard from "./ToolCard"
 import SuggestChips from "./SuggestChips"
 import TMark from "./TMark"
+import Tooltip from "./Tooltip"
 
 marked.setOptions({ gfm: true, breaks: true })
 
@@ -63,18 +64,18 @@ function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
 function CopyButton({ text, title = "复制", className = "" }: { text: string; title?: string; className?: string }) {
   const [done, setDone] = useState(false)
   return (
-    <button
-      type="button"
-      title={done ? "已复制" : title}
-      aria-label={title}
-      onClick={async () => {
-        const okFlag = await copyText(text)
-        if (!okFlag) return
-        setDone(true)
-        window.setTimeout(() => setDone(false), 1400)
-      }}
-      className={`tool-btn ${className}`}
-    >
+    <Tooltip label={done ? "已复制" : title} side="top">
+      <button
+        type="button"
+        aria-label={title}
+        onClick={async () => {
+          const okFlag = await copyText(text)
+          if (!okFlag) return
+          setDone(true)
+          window.setTimeout(() => setDone(false), 1400)
+        }}
+        className={`tool-btn ${className}`}
+      >
       {done ? (
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
           <path d="M3 8.5l3.4 3.4L13 5.2" />
@@ -85,7 +86,8 @@ function CopyButton({ text, title = "复制", className = "" }: { text: string; 
           <path d="M10 6V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h2" />
         </svg>
       )}
-    </button>
+      </button>
+    </Tooltip>
   )
 }
 
@@ -125,7 +127,7 @@ export default function Timeline({
   }
 
   return (
-    <div ref={boxRef} onScroll={onScroll} className="mx-auto h-full max-w-3xl overflow-y-auto px-5 py-8">
+    <div ref={boxRef} onScroll={onScroll} className="mx-auto h-full max-w-3xl overflow-y-auto overflow-x-hidden px-5 py-8">
       {items.length === 0 && (
         <div className="mt-28 text-center">
           <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-accent">
@@ -149,19 +151,20 @@ export default function Timeline({
                     {/* 悬停工具条：复制 / 回退到这条消息之前 */}
                     <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                       <CopyButton text={it.text} />
-                      <button
-                        type="button"
-                        disabled={!canRollback}
-                        title={canRollback ? "回退到这条消息之前" : "这条消息没有可用的回退点（可能已被压缩或超出保留范围）"}
-                        aria-label="回退到这条消息之前"
-                        onClick={() => canRollback && onRollback({ rewindId: it.rewindId as string, text: it.text })}
-                        className="tool-btn disabled:cursor-not-allowed disabled:opacity-35"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M2 8a6 6 0 1 0 6-6 6.5 6.5 0 0 0-4.5 1.83L2 5.33" />
-                          <path d="M2 2v3.33h3.33" />
-                        </svg>
-                      </button>
+                      <Tooltip label={canRollback ? "回退到这条消息之前" : "这条消息没有可用的回退点（可能已被压缩或超出保留范围）"} side="bottom">
+                        <button
+                          type="button"
+                          disabled={!canRollback}
+                          aria-label="回退到这条消息之前"
+                          onClick={() => canRollback && onRollback({ rewindId: it.rewindId as string, text: it.text })}
+                          className="tool-btn disabled:cursor-not-allowed disabled:opacity-35"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M2 8a6 6 0 1 0 6-6 6.5 6.5 0 0 0-4.5 1.83L2 5.33" />
+                            <path d="M2 2v3.33h3.33" />
+                          </svg>
+                        </button>
+                      </Tooltip>
                     </div>
                     <div className="whitespace-pre-wrap rounded-[18px] bg-bubble px-4 py-2.5 text-sm leading-relaxed text-t1">
                       {it.text}
@@ -250,11 +253,13 @@ export default function Timeline({
               parts.push(`Token ↑ ${fmtTokens(it.prompt)} / ↓ ${fmtTokens(it.completion)}`)
             }
             return (
-              <div key={it.id} className="rise flex items-center gap-3 text-[11px] text-t4" title="本轮运行完成时间与 token 消耗">
-                <span className="h-px flex-1 bg-line" />
-                <span className="shrink-0 tabular-nums">{parts.join(" · ")}</span>
-                <span className="h-px flex-1 bg-line" />
-              </div>
+              <Tooltip key={it.id} label="本轮运行完成时间与 token 消耗" side="top">
+                <div className="rise flex items-center gap-3 text-[11px] text-t4">
+                  <span className="h-px flex-1 bg-line" />
+                  <span className="shrink-0 tabular-nums">{parts.join(" · ")}</span>
+                  <span className="h-px flex-1 bg-line" />
+                </div>
+              </Tooltip>
             )
           }
 

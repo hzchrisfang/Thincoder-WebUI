@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react"
 import type { DiffInfo } from "../lib/types"
+import Tooltip from "./Tooltip"
 
 // ---------- unified diff 解析 ----------
 
@@ -132,9 +133,11 @@ export default function DiffViewer({ diff }: { diff: DiffInfo }) {
     <div className="overflow-hidden rounded-xl border border-line">
       {/* 头部：文件 + 统计 + 视图切换 */}
       <div className="flex items-center gap-2 border-b border-line bg-surface2 px-3.5 py-2">
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-t1" title={diff.label}>
-          {diff.label}
-        </span>
+        <Tooltip label={diff.label} side="bottom" className="min-w-0 flex-1">
+          <span className="min-w-0 w-full block truncate font-mono text-xs text-t1">
+            {diff.label}
+          </span>
+        </Tooltip>
         <span className="shrink-0 font-mono text-xs tabular-nums text-emerald-400">+{diff.added}</span>
         <span className="shrink-0 font-mono text-xs tabular-nums text-red-400">−{diff.removed}</span>
         <div className="seg ml-1 shrink-0">
@@ -159,9 +162,11 @@ export default function DiffViewer({ diff }: { diff: DiffInfo }) {
           return (
             <div key={hi}>
               {fileChanged && fileLabel && parsed.labels.length > 1 && (
-                <div className="border-y border-line bg-surface2 px-3.5 py-1 font-mono text-xs text-t2" title={fileLabel}>
-                  {fileLabel}
-                </div>
+                <Tooltip label={fileLabel} side="top" className="min-w-0 w-full">
+                  <div className="min-w-0 w-full truncate border-y border-line bg-surface2 px-3.5 py-1 font-mono text-xs text-t2">
+                    {fileLabel}
+                  </div>
+                </Tooltip>
               )}
               {hi > 0 && !fileChanged && (
                 <div className="bg-surface2 px-3.5 py-1 text-center text-xs text-t4">⋯ 未变更区域已折叠 ⋯</div>

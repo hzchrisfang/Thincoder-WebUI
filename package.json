@@ -1,7 +1,7 @@
 {
   "name": "thincoder-webui",
   "private": true,
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Codex 式 Web 客户端 for thincoder —— 零依赖 Node 桥接层 + 浏览器工作台",
   "type": "module",
   "engines": {

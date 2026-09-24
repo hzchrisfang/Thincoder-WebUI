@@ -14,7 +14,7 @@ import { listProjects, addProject, removeProject, getHost, setHost } from "./lib
 import { getServerReg } from "./lib/server-reg.mjs"
 import * as runner from "./bridge/runner.mjs"
 import * as mcp from "./bridge/mcp.mjs"
-import { loadThincoder, poolEntries, runSlashCommand, getAgent } from "./bridge/thincoder.mjs"
+import { loadThincoder, poolEntries, runSlashCommand, getAgent, thinkingGet, thinkingSet } from "./bridge/thincoder.mjs"
 import * as sessions from "./bridge/sessions.mjs"
 import * as subagents from "./bridge/subagents.mjs"
 import { suggestFollowups } from "./bridge/suggest.mjs"
@@ -188,15 +188,16 @@ async function handleApi(req, res, url) {
       return json(res, 200, { projects })
     }
 
-    // ---- 目录浏览（添加项目时的资源管理器选目录） ----
+    // ---- 目录浏览（添加项目选目录 / 输入框插文件路径；files=1 时同时返回文件条目） ----
     if (p === "/api/fs" && method === "GET") {
       const dir = normalizePath(url.searchParams.get("dir") || homedir())
+      const withFiles = url.searchParams.get("files") === "1"
       if (!dir || !existsSync(dir) || !statSyncIsDir(dir)) return json(res, 400, { error: "目录不存在" })
       try {
         const entries = readdirSync(dir, { withFileTypes: true })
-          .filter((d) => d.isDirectory() && !d.name.startsWith("."))
-          .map((d) => ({ name: d.name }))
-          .sort((a, b) => a.name.localeCompare(b.name))
+          .filter((d) => !d.name.startsWith(".") && (d.isDirectory() || withFiles))
+          .map((d) => ({ name: d.name, isDir: d.isDirectory() }))
+          .sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name))
         const parent = dirname(dir)
         return json(res, 200, { dir, parent: parent === dir ? null : parent, entries })
       } catch (e) {
@@ -472,6 +473,26 @@ async function handleApi(req, res, url) {
       setActiveProvider(t, name)
       return json(res, 200, { ok: true, activeProvider: name })
     }
+    // ---- 思考程度（/think 等价面：读状态+档位枚举 / 设档；桥接层复用内核 applyThink） ----
+    if (p === "/api/thinking" && method === "GET") {
+      const dir = requireProject(url, runner)
+      if (!dir) return json(res, 400, { error: "缺少或未添加的 project" })
+      return json(res, 200, await thinkingGet(dir))
+    }
+    if (p === "/api/thinking" && method === "POST") {
+      const body = await readBody(req)
+      const dir = normalizePath(body.project)
+      const action = String(body.action ?? "")
+      const level = body.level == null ? null : String(body.level)
+      if (!dir) return json(res, 400, { error: "缺少 project" })
+      if (!runner.isKnownProject(dir)) return json(res, 400, { error: "项目未添加" })
+      if (runner.isBusy(dir)) return json(res, 409, { error: "运行中，无法切换思考档位" })
+      if (!["auto", "off", "effort"].includes(action)) return json(res, 400, { error: "action 需为 auto/off/effort" })
+      if (action === "effort" && !level) return json(res, 400, { error: "effort 需带 level" })
+      const result = await thinkingSet(dir, action, level)
+      return json(res, 200, result)
+    }
+
     if (p === "/api/config/test" && method === "POST") {
       const body = await readBody(req)
       const t = await loadThincoder()

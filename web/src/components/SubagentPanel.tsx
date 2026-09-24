@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import type { SubagentItem } from "../lib/types"
+import Tooltip from "./Tooltip"
 
 interface Props {
   items: SubagentItem[]
@@ -82,9 +83,11 @@ export default function SubagentPanel({ items, onClose }: Props) {
         <div className="text-xs font-medium tracking-wide text-t2">
           子代理
           {items.length > 0 && (
-            <span className="ml-1.5 tabular-nums text-t4" title="运行中 / 总数">
-              {running}/{items.length}
-            </span>
+            <Tooltip label="运行中 / 总数" side="bottom">
+              <span className="ml-1.5 tabular-nums text-t4">
+                {running}/{items.length}
+              </span>
+            </Tooltip>
           )}
           {queued > 0 && <span className="ml-1.5 tabular-nums text-t4">排队 {queued}</span>}
         </div>
@@ -113,11 +116,11 @@ export default function SubagentPanel({ items, onClose }: Props) {
               const elapsed = elapsedOf(it, now)
               return (
                 <li key={it.key} className="rounded-lg px-2.5 py-2 text-xs transition-colors hover:bg-hover">
-                  <button
-                    onClick={() => setOpen(expanded ? null : it.key)}
-                    className="flex w-full items-start gap-2.5 text-left"
-                    title={expanded ? "收起详情" : "展开详情"}
-                  >
+                  <Tooltip label={expanded ? "收起详情" : "展开详情"} side="bottom">
+                    <button
+                      onClick={() => setOpen(expanded ? null : it.key)}
+                      className="flex w-full items-start gap-2.5 text-left"
+                    >
                     <span className="mt-px w-3.5 shrink-0 text-center">
                       {it.status === "running" ? (
                         <span className="spinner" />
@@ -146,7 +149,8 @@ export default function SubagentPanel({ items, onClose }: Props) {
                         </span>
                       )}
                     </span>
-                  </button>
+                    </button>
+                  </Tooltip>
 
                   {expanded && (
                     <div className="mt-2 space-y-1.5 border-t border-line pt-2 text-[11px] leading-relaxed text-t3">

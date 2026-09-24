@@ -189,11 +189,16 @@ export async function loadThincoder() {
     // （bridge/subagents.mjs）的唯一解析源，不经此表就在 WebUI 侧自持第二套正则必漂移。
     // 模块缺失（旧内核）→ null：subagents.useRelay 会忽略，面板静默不启用，其余功能照旧
     relay: relayPrefix ? { parseRelayPath: relayPrefix.parseRelayPath, RELAY_PREFIX_RE: relayPrefix.RELAY_PREFIX_RE } : null,
+    // 薄壳 tui 目录按安装形态探测：本地平级（node_modules/thincoder）与全局内嵌
+    // （thincoder/node_modules/@thincoder/core）两种布局都覆盖。斜线命令表与
+    // 思考程度设置（thinkingSet 复用内核 cmd-think.mjs 的 applyThink）共用此探测。
+    tuiDir: [
+      join(dir, "..", "..", "thincoder", "src", "tui"),
+      join(dir, "..", "..", "..", "src", "tui"),
+    ].find((p) => existsSync(p)) ?? null,
     // 斜线命令处理器（thincoder 薄壳 TUI 层）：按需动态 import 单个 cmd 模块——
     // /plan /eng /goal /skills /init 直接复用内核实现，语义零重实现（内核无稳定契约，
     // 重写判据必然漂移）。/new 走 WebUI 现有 sessions 链路，不经此表。
-    // 薄壳 tui 目录按安装形态探测：本地平级（node_modules/thincoder）与全局内嵌
-    // （thincoder/node_modules/@thincoder/core）两种布局都覆盖。
     slashCommands: (() => {
       const tuiDir = [
         join(dir, "..", "..", "thincoder", "src", "tui"),
@@ -203,6 +208,9 @@ export async function loadThincoder() {
       const cmd = (name) => () => import(pathToFileURL(join(tuiDir, `cmd-${name}.mjs`)).href)
       return { plan: cmd("plan"), eng: cmd("eng"), goal: cmd("goal"), skills: cmd("skills"), init: cmd("init") }
     })(),
+    // config-io 原子写（思考程度设置的单字段补丁落盘用；saveConfig 兼容层是整对象语义，
+    // 单字段补丁走 configIo.writeConfigAtomic 直调——磁盘新鲜读，不整写）
+    configIo,
   }
   return tc
 }
@@ -448,4 +456,133 @@ export function switchProvider(projectDir, name) {
 
 export function poolEntries() {
   return pool
+}
+
+// ================= 思考程度（/think 等价面） =================
+
+/**
+ * 读当前思考设置（顶栏选择器显示用）。
+ * 状态 = 池内运行时 provider 的 thinking/reasoningEffort 字段（与内核 TUI 面板头同式）；
+ * 枚举 = specForModel(当前模型).reasoningEffortEnum（模型特定，不可硬编码）。
+ * 池内无该项目实例时回退磁盘配置派生（未打开过的项目也能显示）。
+ */
+export async function thinkingGet(projectDir) {
+  const t = await loadThincoder()
+  const cfg = t.config.loadConfig()
+  const providers = cfg.providersList ?? []
+  const activeName = (() => {
+    const hit = pool.get(projectDir)
+    if (hit?.agent?.activeProvider) return hit.agent.activeProvider
+    const r = t.config.parseModelRef(cfg.defaultModel, providers)
+    return r.ok ? r.provider.name : null
+  })()
+  const p = (() => {
+    const hit = pool.get(projectDir)
+    if (hit?.agent?.provider?.name === activeName && hit.agent.provider) return hit.agent.provider
+    return providers.find((x) => x.name === activeName) ?? null
+  })()
+  const autoThink = Boolean(
+    pool.get(projectDir)?.agent?.config?.agent?.autoThink ?? cfg.agent?.autoThink ?? false
+  )
+  if (!p?.model) {
+    return { supported: false, autoThink, provider: activeName, model: null, state: null, levels: [] }
+  }
+  // 内核 TUI 面板头同式（cmd-think.mjs:47-49）：thinking:null 是显式 off 标记；
+  // undefined（从未设置）对 effort 型模型视为 ON（qwen3.x 服务端默认开思考）
+  const spec = t.config.specForModel(p.model)
+  const thinkApi = spec.thinkApi ?? "effort"
+  const onValue = spec.thinkEnabledValue ?? "enabled"
+  const isCustomThink = onValue !== "enabled"
+  const thinkingEnabled =
+    p.thinking?.type === onValue || (p.thinking !== null && p.thinking?.type === undefined && !isCustomThink)
+  const levels = spec.reasoningEffortEnum ?? []
+  // 「支持思考档」= 模型 spec 声明了 reasoningEffortEnum；无枚举（如 glm-4）不渲染选择器
+  if (!levels.length) {
+    return { supported: false, autoThink, provider: activeName, model: p.model, state: null, levels: [] }
+  }
+  const state = thinkingEnabled
+    ? p.reasoningEffort && levels.includes(p.reasoningEffort)
+      ? p.reasoningEffort // 具体档位
+      : "on" // 开思考但没落具体档（服务端默认强度）；从未设置也在此（内核式「未设置即 ON」）
+    : "off" // 显式关（effort 型 = thinking:null 标记；type 型 = {type:"disabled"}）
+  return { supported: true, autoThink, provider: activeName, model: p.model, state, levels }
+}
+
+/**
+ * 设置思考档位（顶栏选择器 /think 等价面）。
+ * action: "auto"（切换 autoThink）| "off"（关思考）| "effort"（level = 具体档位）。
+ * 复用内核 cmd-think.mjs 的 applyThink（命名导出，专为复用拆出）——档位归一（none→off）、
+ * NF1 off 标记、autoThink 清理标记等内核语义零重实现。
+ * syncProviderField 等价物：磁盘新鲜读 + 单字段补丁（configIo.writeConfigAtomic）+
+ * 内存镜像（agent.providers 目标项 + agent.provider 运行时本体）——与 TUI config-helpers 同式。
+ */
+export async function thinkingSet(projectDir, action, level) {
+  const t = await loadThincoder()
+  if (!t.tuiDir) throw new Error("未找到内核 TUI 模块目录（cmd-think.mjs）")
+  const entry = pool.get(projectDir)
+  const agent = entry?.agent
+  if (!agent) throw new Error("项目未加载")
+
+  const spec = t.config.specForModel(agent.provider?.model ?? "")
+  const thinkApi = spec.thinkApi ?? "effort"
+  const onValue = spec.thinkEnabledValue ?? "enabled"
+  const isCustomThink = onValue !== "enabled"
+  const levels = spec.reasoningEffortEnum ?? []
+  if (action === "effort" && !levels.includes(level)) {
+    throw new Error(`档位 ${level} 不被模型 ${agent.provider?.model} 支持（可用：${levels.join("/") || "无"}）`)
+  }
+  if (action === "auto" && !levels.length) {
+    throw new Error(`模型 ${agent.provider?.model} 未声明思考档位，不适用 Auto`)
+  }
+  // 选手动档时若 Auto-think 开启 → 先自动退出 Auto 再应用（内核 TUI 是报错引导两步走；
+  // 下拉选择器的意图无歧义——选档即「退出自动并应用该档」，一步到位）。
+  // autoThink 本身只改 agent.config 内存态（内核 applyThink 的 auto 动作同样不落盘）。
+  if (action !== "auto" && agent.config?.agent?.autoThink === true) {
+    agent.config.agent.autoThink = false
+  }
+
+  // 单字段补丁写盘（磁盘新鲜读——长跑进程不整写 providers 快照，保留对端改动）+ 内存镜像。
+  // value === undefined → 删除字段。TUI config-helpers.syncProviderField 的 WebUI 等价物。
+  const syncProviderField = async (name, field, value) => {
+    const mem = agent.providers?.find((x) => x?.name === name)
+    if (!mem) return
+    const r = t.configIo.writeConfigAtomic(t.config.configPath, (raw) => {
+      raw.providers ??= []
+      const target = raw.providers.find((x) => x?.name === name)
+      if (!target) return // 磁盘目标已被对端删除 → 只做内存镜像，不落盘
+      if (value === undefined) delete target[field]
+      else target[field] = value
+    })
+    if (!r?.ok) throw new Error("config changed on disk concurrently — retry")
+    if (value === undefined) delete mem[field]
+    else mem[field] = value
+  }
+
+  // F2 补齐（内核 cmd-think.mjs:117-119 裁定「选档位 = 要思考：清显式 off 标记——残留标记
+  // 会与 reasoning_effort 矛盾同发」在 type 型模型的等价缺口）：effort 型的 off 标记是
+  // thinking:null（内核已清）；type 型的 off 标记是 {type:"disabled"}（内核 effort/auto 分支
+  // 不清——TUI 菜单流同样残留，WebUI 包装层补齐）。「选档 = 要思考」「开 Auto = 要思考」
+  // 两个动作前置清掉 disabled 标记（内存 + 落盘同步），否则 body 会同时带 thinking:disabled
+  // 与 reasoning_effort（或 auto 逐轮改写的 effort）——与 effort 型 F2 同型的矛盾载荷。
+  if ((action === "effort" || action === "auto") && thinkApi === "type" && !isCustomThink
+    && agent.provider?.thinking && agent.provider.thinking.type === "disabled") {
+    delete agent.provider.thinking
+    await syncProviderField(agent.activeProvider, "thinking", undefined)
+  }
+
+  // 前置状态与选后状态（供调用方回执）；applyThink 原地改 agent.provider + 落盘。
+  // applyThink 内部消费 spec 的仅 reasoningEffortEnum（on 默认档取首个非 none）——直接透传 spec。
+  const before = await thinkingGet(projectDir)
+  const think = await import(pathToFileURL(join(t.tuiDir, "cmd-think.mjs")).href)
+  await think.applyThink(
+    { action, ...(action === "effort" ? { level } : {}) },
+    agent,
+    syncProviderField,
+    spec,
+    thinkApi === "effort",
+    isCustomThink,
+    onValue
+  )
+  const after = await thinkingGet(projectDir)
+  return { before, after, ok: true }
 }

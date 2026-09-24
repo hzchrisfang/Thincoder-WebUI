@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api, ApiError } from "./lib/api"
-import type { ApprovalMode, PendingApproval, PendingRequest, ProviderStatus, RewindSummary, ServerEvent, Snapshot, SubagentItem, TimelineItem } from "./lib/types"
+import type { ApprovalMode, PendingApproval, PendingRequest, ProviderStatus, RewindSummary, ServerEvent, Snapshot, SubagentItem, ThinkingInfo, TimelineItem } from "./lib/types"
 import TopBar from "./components/TopBar"
 import Timeline from "./components/Timeline"
 import Composer from "./components/Composer"
@@ -77,6 +77,8 @@ export default function App() {
   const [project, setProject] = useState<string | null>(null)
   const projectRef = useRef<string | null>(null)
   const [provider, setProvider] = useState<ProviderStatus | null>(null)
+  // 思考程度（顶栏选择器）：随项目打开 / 模型切换刷新；supported=false 时 TopBar 不渲染
+  const [thinking, setThinking] = useState<ThinkingInfo | null>(null)
   const [items, setItems] = useState<TimelineItem[]>([])
   const itemsRef = useRef<TimelineItem[]>([])
   const streamIdRef = useRef<string | null>(null)
@@ -685,7 +687,7 @@ export default function App() {
     const name = dir.split(/[\\/]/).filter(Boolean).pop() ?? dir
     if (
       !window.confirm(
-        `移除项目「${name}」？\n\n目录内的所有文件都会保留；仅删除 thincoder 中该项目的会话历史（当前会话、归档、回退点、用量记录），且不可恢复。\n引用该目录的定时任务将失效，可在任务页删除。`
+        `移除项目「${name}」？\n\n目录内的所有文件都会保留；仅删除 thincoder 中该项目的会话历史（当前会话、归档、回退点、用量记录），且不可恢复。\n引用该目录的定时任务将失效，可在定时页删除。`
       )
     )
       return
@@ -833,10 +835,31 @@ export default function App() {
       .catch(() => {})
   }, [])
 
+  // 思考程度状态刷新：项目变化 / 模型切换后重取（档位枚举随模型走）
+  const refreshThinking = useCallback(() => {
+    const dir = projectRef.current
+    if (!dir) {
+      setThinking(null)
+      return
+    }
+    api
+      .thinking(dir)
+      .then((r) => setThinking(r))
+      .catch(() => setThinking(null))
+  }, [])
+
   // 切回对话视图时对齐一次模型状态：设置页切换供应商 / 终端 TUI 改配置 / 多标签操作后都能自愈
   useEffect(() => {
-    if (view === "chat") refreshProvider()
-  }, [view, refreshProvider])
+    if (view === "chat") {
+      refreshProvider()
+      refreshThinking()
+    }
+  }, [view, refreshProvider, refreshThinking])
+
+  // 项目切换后重取思考档状态
+  useEffect(() => {
+    refreshThinking()
+  }, [project, refreshThinking])
 
   // ---------- 渲染 ----------
 
@@ -865,7 +888,7 @@ export default function App() {
   })
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full overflow-x-hidden">
       <NavRail
         view={view}
         onChange={(v) => {
@@ -900,6 +923,26 @@ export default function App() {
           <>
             <TopBar
               provider={provider}
+              thinking={thinking}
+              onThinking={(action, level) => {
+                if (!project) return
+                api
+                  .setThinking(project, action, level)
+                  .then((r) => {
+                    setThinking(r.after)
+                    notice(
+                      "info",
+                      r.after.autoThink
+                        ? "think: auto（内核按任务难度逐轮自动定档）"
+                        : r.after.state === "off"
+                          ? "think: off"
+                          : r.after.state === "on"
+                            ? "think: on（服务端默认强度）"
+                            : `think: ${r.after.state}`
+                    )
+                  })
+                  .catch((e) => notice("error", `设置思考档位失败：${e instanceof Error ? e.message : String(e)}`))
+              }}
               onOpenSettings={() => setView("settings")}
               onSwitchProvider={(name) => {
                 api

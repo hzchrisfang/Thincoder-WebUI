@@ -2,6 +2,7 @@ import { useState } from "react"
 import type { DiffInfo, PendingRequest } from "../lib/types"
 import { argSummary } from "./ToolCard"
 import DiffViewer from "./DiffViewer"
+import Tooltip from "./Tooltip"
 
 interface Props {
   req: PendingRequest
@@ -21,12 +22,11 @@ export default function Modals({ req, queueCount, currentProject, onDecide, onAn
   const [answer, setAnswer] = useState("")
   const fromOther = Boolean(req.project && currentProject && req.project !== currentProject)
   const projectBadge = fromOther && (
-    <span
-      className="ml-auto max-w-[40%] truncate rounded-full bg-sky-950 px-2.5 py-0.5 text-xs text-sky-300"
-      title={req.project}
-    >
-      项目 {PROJECT_NAME(req.project)}
-    </span>
+    <Tooltip label={req.project} side="bottom" className="ml-auto max-w-[40%]">
+      <span className="inline-flex max-w-full items-center truncate rounded-full bg-sky-950 px-2.5 py-0.5 text-xs text-sky-300">
+        项目 {PROJECT_NAME(req.project)}
+      </span>
+    </Tooltip>
   )
 
   return (

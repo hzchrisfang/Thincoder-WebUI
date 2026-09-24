@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react"
 import { api } from "../lib/api"
 import type { CheckpointInfo, CommitInfo, DiffInfo, GitStatus } from "../lib/types"
 import DiffViewer from "./DiffViewer"
+import Tooltip from "./Tooltip"
 
 /** Git 浏览 + 检查点时光机（只读优先，写操作仅检查点回滚） */
 export default function GitPage({ project }: { project: string | null }) {
@@ -145,9 +146,11 @@ export default function GitPage({ project }: { project: string | null }) {
                   className="flex items-center gap-3 border-t border-line px-4 py-2.5 transition-colors first:border-t-0 hover:bg-hover/60"
                 >
                   <span className="shrink-0 font-mono text-xs text-accent">{c.short}</span>
-                  <span className="min-w-0 flex-1 truncate text-xs text-t2" title={c.subject}>
-                    {c.subject}
-                  </span>
+                  <Tooltip label={c.subject} side="top" className="min-w-0 flex-1">
+                    <span className="min-w-0 w-full block truncate text-xs text-t2">
+                      {c.subject}
+                    </span>
+                  </Tooltip>
                   <span className="shrink-0 text-xs text-t4">{c.author}</span>
                   <span className="shrink-0 text-xs tabular-nums text-t4">
                     {c.date.slice(0, 16).replace("T", " ")}
@@ -195,10 +198,11 @@ function FileGroup({
           key={`${label}:${f.path}`}
           onClick={() => onOpen(f.path)}
           className="flex w-full items-center gap-2.5 px-4 py-2 text-left font-mono text-xs text-t2 transition-colors hover:bg-hover/60"
-          title="查看 diff"
         >
           {f.code && <span className={`w-4 shrink-0 text-center ${toneCls}`}>{f.code}</span>}
-          <span className="truncate">{f.path}</span>
+          <Tooltip label="查看 diff" side="top" className="min-w-0 flex-1">
+            <span className="min-w-0 w-full block truncate">{f.path}</span>
+          </Tooltip>
         </button>
       ))}
     </div>

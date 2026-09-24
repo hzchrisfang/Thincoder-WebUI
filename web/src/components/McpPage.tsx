@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import { api } from "../lib/api"
+import Tooltip from "./Tooltip"
 import type {
   McpImportGroup,
   McpImportResult,
@@ -265,9 +266,11 @@ export default function McpPage({ project, running, refreshTick }: Props) {
           </p>
         </div>
         <div className="flex shrink-0 gap-2">
-          <button onClick={() => reconnect()} className="btn-ghost px-3 py-1.5 text-xs" title="按最新配置重连全部 server">
-            全部重连
-          </button>
+          <Tooltip label="按最新配置重连全部 server" side="bottom">
+            <button onClick={() => reconnect()} className="btn-ghost px-3 py-1.5 text-xs">
+              全部重连
+            </button>
+          </Tooltip>
           <button onClick={openAdd} className="btn-primary px-3.5 py-1.5 text-xs">
             ＋ 安装
           </button>
@@ -348,23 +351,27 @@ export default function McpPage({ project, running, refreshTick }: Props) {
                 ) : (
                   <span className="rounded-full border border-line2 px-2 py-0.5 text-xs text-t4">未加载</span>
                 )}
-                <span className="min-w-0 flex-1 truncate font-mono text-xs text-t4" title={desc}>
-                  {desc}
-                  {s.headers.length > 0 && ` · ${s.headers.map((h) => h.key).join(", ")}`}
-                </span>
-                <label
-                  className="flex shrink-0 items-center gap-1 text-xs text-t4"
-                  title={project ? "控制当前项目是否加载此 server（其它项目不受影响）" : "先选择一个项目"}
+                <Tooltip label={desc} side="top" className="min-w-0 flex-1">
+                  <span className="min-w-0 w-full block truncate font-mono text-xs text-t4">
+                    {desc}
+                    {s.headers.length > 0 && ` · ${s.headers.map((h) => h.key).join(", ")}`}
+                  </span>
+                </Tooltip>
+                <Tooltip
+                  label={project ? "控制当前项目是否加载此 server（其它项目不受影响）" : "先选择一个项目"}
+                  side="top"
                 >
-                  <input
-                    type="checkbox"
-                    className="accent-accent"
-                    checked={!isOff}
-                    disabled={!project}
-                    onChange={(e) => toggleProject(s.name, e.target.checked)}
-                  />
-                  本项目
-                </label>
+                  <label className="flex shrink-0 items-center gap-1 text-xs text-t4">
+                    <input
+                      type="checkbox"
+                      className="accent-accent"
+                      checked={!isOff}
+                      disabled={!project}
+                      onChange={(e) => toggleProject(s.name, e.target.checked)}
+                    />
+                    本项目
+                  </label>
+                </Tooltip>
                 {connected && !isOff && st && st.tools.length > 0 && (
                   <button
                     onClick={() => setExpanded(expanded === s.name ? null : s.name)}
@@ -465,16 +472,16 @@ export default function McpPage({ project, running, refreshTick }: Props) {
             <div className="mb-3 flex flex-wrap items-center gap-1.5">
               <span className="mr-1 text-xs text-t3">模板：</span>
               {presets.map((ps) => (
-                <button
-                  key={ps.id}
-                  onClick={() => applyPreset(ps)}
-                  title={ps.hint}
-                  className={`rounded-full px-2.5 py-1 text-xs transition-colors ${
-                    form.name === ps.id ? "bg-accent text-white" : "border border-line2 text-t3 hover:border-accent hover:text-t1"
-                  }`}
-                >
-                  {ps.desc}
-                </button>
+                <Tooltip key={ps.id} label={ps.hint} side="top">
+                  <button
+                    onClick={() => applyPreset(ps)}
+                    className={`rounded-full px-2.5 py-1 text-xs transition-colors ${
+                      form.name === ps.id ? "bg-accent text-white" : "border border-line2 text-t3 hover:border-accent hover:text-t1"
+                    }`}
+                  >
+                    {ps.desc}
+                  </button>
+                </Tooltip>
               ))}
             </div>
           )}

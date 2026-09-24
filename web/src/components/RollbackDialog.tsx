@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { api, ApiError } from "../lib/api"
 import type { RewindFile, RewindPreview, RewindSummary } from "../lib/types"
+import Tooltip from "./Tooltip"
 
 interface Props {
   project: string
@@ -102,9 +103,9 @@ export default function RollbackDialog({ project, rewindId, text, queued, onClos
                       </div>
                       <div className="max-h-40 overflow-y-auto rounded-xl border border-line bg-surface2 p-2 font-mono text-xs leading-relaxed text-t2">
                         {files.map((f) => (
-                          <div key={f.path} className="truncate" title={f.path}>
-                            {f.path}
-                          </div>
+                          <Tooltip key={f.path} label={f.path} side="top" className="min-w-0 w-full">
+                            <div className="min-w-0 w-full truncate">{f.path}</div>
+                          </Tooltip>
                         ))}
                       </div>
                     </div>

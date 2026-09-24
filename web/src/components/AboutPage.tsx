@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { api } from "../lib/api"
 import type { ServerEvent } from "../lib/types"
 import TMark from "./TMark"
+import Tooltip from "./Tooltip"
 
 const GITHUB_URL = "https://github.com/hzchrisfang/Thincoder-WebUI"
 
@@ -127,7 +128,7 @@ export default function AboutPage() {
   const running = upd?.state === "running"
 
   return (
-    <div className="mx-auto h-full max-w-3xl overflow-y-auto px-8 py-8">
+    <div className="mx-auto h-full max-w-3xl overflow-y-auto overflow-x-hidden px-8 py-8">
       <h1 className="mb-5 text-base font-medium text-t1">关于</h1>
 
       <div className="rounded-xl border border-line bg-surface px-5 py-4">
@@ -144,46 +145,48 @@ export default function AboutPage() {
               检查中留空，失败/镜像滞后说明进悬停。口径同内核——中性事实陈述；
               0.8.0 起 outdated 时旁边有一键更新按钮（服务端编排，完成后手动重启生效） */}
           {wu?.latest != null && (
-            <span
-              className={
-                wu.outdated ? "text-xs text-accent" : "text-xs text-t4"
-              }
-              title={
+            <Tooltip
+              label={
                 wu.outdated
                   ? `公开仓已发布 ${wu.latest}。可一键更新：自动拉取新代码、安装依赖并重新构建，完成后重启服务生效`
                   : wu.source === "jsdelivr"
                     ? "经 jsDelivr 镜像检查（缓存有滞后，结果可能偏旧）"
                     : undefined
               }
+              side="top"
             >
-              {wu.outdated ? `有可用更新：v${wu.latest}` : "已是最新"}
-            </span>
+              <span className={wu.outdated ? "text-xs text-accent" : "text-xs text-t4"}>
+                {wu.outdated ? `有可用更新：v${wu.latest}` : "已是最新"}
+              </span>
+            </Tooltip>
           )}
           {wu?.latest == null && wu?.error && (
             <span className="text-xs text-t4" title={`最新版检查失败：${wu.error}`} />
           )}
           {/* 一键更新按钮：outdated 时出现在检查小字旁；进步度态（运行中禁用） */}
           {wu?.outdated && (
-            <button
-              onClick={applyUpdate}
-              disabled={running}
-              title={running ? "更新进行中，可在下方日志区查看进度" : "服务端自动拉取、安装依赖并重新构建"}
-              className="shrink-0 rounded-lg bg-accent px-2.5 py-1 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {running ? "更新中…" : "一键更新"}
-            </button>
+            <Tooltip label={running ? "更新进行中，可在下方日志区查看进度" : "服务端自动拉取、安装依赖并重新构建"} side="top">
+              <button
+                onClick={applyUpdate}
+                disabled={running}
+                className="shrink-0 rounded-lg bg-accent px-2.5 py-1 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {running ? "更新中…" : "一键更新"}
+              </button>
+            </Tooltip>
           )}
           <span className="flex-1" />
-          <a
-            href={`${GITHUB_URL}/stargazers`}
-            target="_blank"
-            rel="noreferrer"
-            title="到 GitHub 仓库点 Star"
-            className="flex shrink-0 items-center gap-1.5 rounded-lg border border-line2 px-2.5 py-1 text-xs text-t3 transition-colors hover:border-t4/50 hover:bg-hover hover:text-t1"
-          >
-            <GitHubMark className="h-3.5 w-3.5" />
-            Star
-          </a>
+          <Tooltip label="到 GitHub 仓库点 Star" side="bottom">
+            <a
+              href={`${GITHUB_URL}/stargazers`}
+              target="_blank"
+              rel="noreferrer"
+              className="flex shrink-0 items-center gap-1.5 rounded-lg border border-line2 px-2.5 py-1 text-xs text-t3 transition-colors hover:border-t4/50 hover:bg-hover hover:text-t1"
+            >
+              <GitHubMark className="h-3.5 w-3.5" />
+              Star
+            </a>
+          </Tooltip>
         </div>
 
         {/* 简介（用户定稿文案，三段） */}
@@ -251,32 +254,35 @@ export default function AboutPage() {
           {/* 内核最新版检查：同款小字口径。有新版只做中性陈述——内核无稳定契约，
               直接升级可能造成 WebUI 桥接层不适配，是否升级由用户另行评估（悬停有提醒） */}
           {ku?.latest != null && (
-            <span
-              className={ku.outdated ? "text-accent" : ""}
-              title={
+            <Tooltip
+              label={
                 ku.outdated
                   ? `npm 已发布 ${ku.latest}。内核无稳定契约，升级需与 WebUI 桥接层同步适配，请勿直接升级`
                   : ku.source === "npmmirror"
                     ? "经 npmmirror 镜像源检查（同步有滞后，结果可能偏旧）"
                     : undefined
               }
+              side="top"
             >
-              {ku.outdated ? `（有可用更新：v${ku.latest}）` : "（已是最新）"}
-            </span>
+              <span className={ku.outdated ? "text-accent" : ""}>
+                {ku.outdated ? `（有可用更新：v${ku.latest}）` : "（已是最新）"}
+              </span>
+            </Tooltip>
           )}
           {ku?.latest == null && ku?.error && (
             <span className="text-t4" title={`最新版检查失败：${ku.error}`} />
           )}
           <span className="flex-1" />
-          <a
-            href={`${GITHUB_URL}/blob/main/CHANGELOG.md`}
-            target="_blank"
-            rel="noreferrer"
-            title="公开仓 CHANGELOG.md"
-            className="text-t4/80 underline decoration-transparent underline-offset-2 transition-colors hover:text-t1 hover:decoration-line2"
-          >
-            更新日志
-          </a>
+          <Tooltip label="公开仓 CHANGELOG.md" side="top">
+            <a
+              href={`${GITHUB_URL}/blob/main/CHANGELOG.md`}
+              target="_blank"
+              rel="noreferrer"
+              className="text-t4/80 underline decoration-transparent underline-offset-2 transition-colors hover:text-t1 hover:decoration-line2"
+            >
+              更新日志
+            </a>
+          </Tooltip>
         </div>
       </div>
     </div>

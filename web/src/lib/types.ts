@@ -66,6 +66,17 @@ export interface ProviderStatus {
   activeProvider: string | null
 }
 
+/** 思考程度（/api/thinking）——档位枚举随模型走（服务端 specForModel 派生），前端不硬编码 */
+export interface ThinkingInfo {
+  supported: boolean
+  autoThink: boolean
+  provider: string | null
+  model: string | null
+  /** off=显式关 / on=开但未落档 / 具体档位名；supported=false 或未配置模型时为 null */
+  state: string | null
+  levels: string[]
+}
+
 /** 子代理进度条目（右侧「子代理」面板；服务端 subagents_update 广播 / snapshot.subagents 播种） */
 export interface SubagentItem {
   key: string

@@ -312,9 +312,13 @@ body {
   background: var(--line-2);
   background-clip: content-box;
 }
-::-webkit-scrollbar-track {
-  background: transparent;
-}
+ ::-webkit-scrollbar-track {
+   background: transparent;
+ }
+ /* 纵横滚动条交角（右下角）——不定义时浏览器用默认白色，深色主题下露白块 */
+ ::-webkit-scrollbar-corner {
+   background: transparent;
+ }
 
 /* 键盘可达性：统一焦点环 */
 :focus-visible {

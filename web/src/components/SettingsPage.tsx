@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react"
 import { api } from "../lib/api"
 import type { Preset, ProvidersConfig } from "../lib/types"
 import LanQR from "./LanQR"
+import Tooltip from "./Tooltip"
 
 /** 设置页 —— 供应商管理 / embedding / 安全 */
 export default function SettingsPage({ onProviderChanged }: { onProviderChanged: () => void }) {
@@ -204,23 +205,26 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
             return (
               <div key={p.name} className={`border-t border-line px-4 py-3 first:border-t-0 ${active ? "bg-accent-soft/40" : ""}`}>
                 <div className="flex items-center gap-2.5">
-                  <input
-                    type="radio"
-                    name="active-provider"
-                    checked={active}
-                    onChange={() => activate(p.name)}
-                    title="设为激活"
-                    className="accent-accent"
-                  />
+                  <Tooltip label="设为激活" side="right">
+                    <input
+                      type="radio"
+                      name="active-provider"
+                      checked={active}
+                      onChange={() => activate(p.name)}
+                      className="accent-accent"
+                    />
+                  </Tooltip>
                   <span className="text-sm font-medium text-t1">{p.name}</span>
                   {active && (
                     <span className="rounded-full bg-emerald-950 px-2 py-0.5 text-xs font-medium text-emerald-300">
                       激活
                     </span>
                   )}
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-t4" title={p.baseURL}>
-                    {p.model} · {p.baseURL}
-                  </span>
+                  <Tooltip label={p.baseURL} side="right" className="min-w-0 flex-1">
+                    <span className="min-w-0 w-full block truncate font-mono text-xs text-t4">
+                      {p.model} · {p.baseURL}
+                    </span>
+                  </Tooltip>
                   <span className={`shrink-0 text-xs ${p.hasKey ? "text-emerald-400" : "text-red-400"}`}>
                     {p.hasKey ? `key ····${p.keyTail}` : "无 key"}
                   </span>

@@ -19,6 +19,8 @@ import type {
   RewindSummary,
   SessionListInfo,
   Snapshot,
+  SubagentItem,
+  ThinkingInfo,
   TimelineItem,
   UsageStats,
 } from "./types"
@@ -48,11 +50,13 @@ export const api = {
   /** 移除项目：移出历史面板并清除该项目在 thincoder 中的会话历史（目录内文件保留） */
   removeProject: (dir: string) =>
     request<{ projects: { dir: string }[] }>("/api/projects", { method: "DELETE", body: JSON.stringify({ dir }) }),
-  /** 目录浏览（添加项目时的资源管理器）：不传 dir 从用户主目录开始 */
-  fsList: (dir?: string) =>
-    request<{ dir: string; parent: string | null; entries: { name: string }[] }>(
-      `/api/fs${dir ? `?dir=${encodeURIComponent(dir)}` : ""}`
-    ),
+  /** 目录浏览：不传 dir 从用户主目录开始；withFiles 时同时返回文件条目（输入框插文件路径用） */
+  fsList: (dir?: string, withFiles?: boolean) => {
+    const q = [dir ? `dir=${encodeURIComponent(dir)}` : "", withFiles ? "files=1" : ""].filter(Boolean).join("&")
+    return request<{ dir: string; parent: string | null; entries: { name: string; isDir?: boolean }[] }>(
+      `/api/fs${q ? `?${q}` : ""}`
+    )
+  },
   open: (project: string) =>
     request<{ provider: ProviderStatus }>("/api/open", { method: "POST", body: JSON.stringify({ project }) }),
   chat: (project: string, text: string) =>
@@ -221,5 +225,14 @@ export const api = {
     request<{ suggestions: string[] }>("/api/suggest", {
       method: "POST",
       body: JSON.stringify({ project, ...payload }),
+    }),
+  /** 思考程度：读当前状态 + 当前模型的档位枚举 */
+  thinking: (project: string) =>
+    request<ThinkingInfo>(`/api/thinking?project=${encodeURIComponent(project)}`),
+  /** 设思考档：auto=切换 Auto-think / off=关思考 / effort+level=具体档位 */
+  setThinking: (project: string, action: "auto" | "off" | "effort", level?: string) =>
+    request<{ ok: boolean; after: ThinkingInfo }>("/api/thinking", {
+      method: "POST",
+      body: JSON.stringify({ project, action, level }),
     }),
 }

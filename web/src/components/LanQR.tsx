@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react"
 import { QRCodeSVG } from "qrcode.react"
+import Tooltip from "./Tooltip"
 
 interface Props {
   port: number | null
@@ -61,9 +62,11 @@ export default function LanQR({ port, token, addresses }: Props) {
 
           {url && (
             <div className="mt-2.5 flex items-center gap-1.5">
-              <code className="min-w-0 flex-1 truncate rounded-md bg-surface3 px-2 py-1 font-mono text-xs text-t2" title={url}>
-                {url}
-              </code>
+              <Tooltip label={url} side="top" className="min-w-0 flex-1">
+                <code className="min-w-0 w-full block truncate rounded-md bg-surface3 px-2 py-1 font-mono text-xs text-t2">
+                  {url}
+                </code>
+              </Tooltip>
               <button onClick={copy} className="btn-ghost shrink-0 px-2.5 py-1 text-xs">
                 {copied ? "已复制" : "复制"}
               </button>
@@ -75,18 +78,18 @@ export default function LanQR({ port, token, addresses }: Props) {
             <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
               <span className="text-xs text-t4">网卡：</span>
               {addresses.map((a, i) => (
-                <button
-                  key={a.address}
-                  onClick={() => setIdx(i)}
-                  title={a.name}
-                  className={`rounded-full px-2.5 py-0.5 font-mono text-xs transition-colors ${
-                    i === Math.min(idx, addresses.length - 1)
-                      ? "bg-accent text-white"
-                      : "border border-line2 text-t3 hover:border-accent hover:text-t1"
-                  }`}
-                >
-                  {a.address}
-                </button>
+                <Tooltip key={a.address} label={a.name} side="top">
+                  <button
+                    onClick={() => setIdx(i)}
+                    className={`rounded-full px-2.5 py-0.5 font-mono text-xs transition-colors ${
+                      i === Math.min(idx, addresses.length - 1)
+                        ? "bg-accent text-white"
+                        : "border border-line2 text-t3 hover:border-accent hover:text-t1"
+                    }`}
+                  >
+                    {a.address}
+                  </button>
+                </Tooltip>
               ))}
             </div>
           )}

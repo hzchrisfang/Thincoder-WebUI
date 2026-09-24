@@ -1,4 +1,5 @@
 import type { ToolCardData } from "../lib/types"
+import Tooltip from "./Tooltip"
 
 /** 按工具名生成一行摘要（对齐 bin 的 formatPermission 风格） */
 export function argSummary(name: string, args: Record<string, unknown>): string {
@@ -55,9 +56,9 @@ export default function ToolCard({ tool }: { tool: ToolCardData }) {
       <summary className="flex cursor-pointer select-none items-center gap-2.5 px-3.5 py-2.5">
         <span className="flex h-4 w-4 shrink-0 items-center justify-center">{badge}</span>
         <span className="shrink-0 font-mono text-xs font-medium text-accent">{tool.name}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-t4" title={summary}>
-          {summary}
-        </span>
+        <Tooltip label={summary} side="top" className="min-w-0 flex-1">
+          <span className="min-w-0 w-full block truncate font-mono text-xs text-t4">{summary}</span>
+        </Tooltip>
         {tool.truncated && (
           <span className="shrink-0 rounded-full bg-surface3 px-2 py-0.5 text-xs text-t4">
             已截断 {tool.fullLength?.toLocaleString()}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { api } from "../lib/api"
 import type { SessionListInfo } from "../lib/types"
+import Tooltip from "./Tooltip"
 
 interface Props {
   project: string
@@ -56,14 +57,15 @@ export default function SessionPanel({ project, running, onClose, onNew, onSwitc
                       {info.current.updatedAt ? ` · ${new Date(info.current.updatedAt).toLocaleString()}` : ""}
                     </div>
                   </div>
-                  <button
-                    onClick={onArchive}
-                    disabled={running || info.current.msgs === 0}
-                    title="把当前会话复制一份到归档槽位（保留现场）"
-                    className="btn-ghost shrink-0 px-3 py-1.5 text-xs"
-                  >
-                    存档
-                  </button>
+                  <Tooltip label="把当前会话复制一份到归档槽位（保留现场）" side="top">
+                    <button
+                      onClick={onArchive}
+                      disabled={running || info.current.msgs === 0}
+                      className="btn-ghost shrink-0 px-3 py-1.5 text-xs"
+                    >
+                      存档
+                    </button>
+                  </Tooltip>
                 </div>
               </div>
 

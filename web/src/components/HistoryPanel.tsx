@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { api } from "../lib/api"
 import type { SessionListInfo } from "../lib/types"
+import Tooltip from "./Tooltip"
 
 interface Props {
   projects: string[]
@@ -19,7 +20,7 @@ interface Props {
   onRemove: (dir: string) => void
 }
 
-/** 仅显示最后一个子目录名；完整路径由调用处的 title 提供悬浮提示 */
+/** 仅显示最后一个子目录名；完整路径由调用处的 Tooltip 提供悬浮提示 */
 const short = (dir: string) => {
   const parts = dir.split(/[\\/]/).filter(Boolean)
   return parts.length ? parts[parts.length - 1] : dir
@@ -91,25 +92,27 @@ export default function HistoryPanel({
         {total > 0 && <span className="text-xs tabular-nums text-t4">{total}</span>}
         <div className="flex-1" />
         {/* ＋ 右补 8px：与折叠钮总间距 16px，使其中心落在 72px 基准——与下方项目行控制簇的「＋」同轴 */}
-        <button
-          onClick={onAddProject}
-          title="添加项目目录"
-          className="mr-2 flex h-7 w-7 items-center justify-center rounded-lg text-sm text-t3 transition-colors hover:bg-hover hover:text-t1"
-        >
-          ＋
-        </button>
-        <button
-          onClick={onClose}
-          title="收起面板"
-          className="flex h-7 w-7 items-center justify-center rounded-lg text-t4 transition-colors hover:bg-hover hover:text-t1"
-        >
-          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M10 4 6 8l4 4" />
-          </svg>
-        </button>
+        <Tooltip label="添加项目目录" side="right" className="mr-2">
+          <button
+            onClick={onAddProject}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-sm text-t3 transition-colors hover:bg-hover hover:text-t1"
+          >
+            ＋
+          </button>
+        </Tooltip>
+        <Tooltip label="收起面板" side="right">
+          <button
+            onClick={onClose}
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-t4 transition-colors hover:bg-hover hover:text-t1"
+          >
+            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 4 6 8l4 4" />
+            </svg>
+          </button>
+        </Tooltip>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2 pb-3">
         {projects.length === 0 && (
           <div className="px-2.5 py-8 text-center text-xs leading-relaxed text-t4">
             还没有项目。
@@ -129,66 +132,74 @@ export default function HistoryPanel({
                   active ? "bg-surface" : "hover:bg-hover"
                 }`}
               >
-                <button
-                  onClick={() => toggle(dir)}
-                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-t4 transition-colors hover:text-t2"
-                  title={open ? "折叠" : "展开"}
-                >
-                  <svg
-                    viewBox="0 0 16 16"
-                    className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`}
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
+                <Tooltip label={open ? "折叠" : "展开"} side="bottom">
+                  <button
+                    onClick={() => toggle(dir)}
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-t4 transition-colors hover:text-t2"
                   >
-                    <path d="M6 4l4 4-4 4" />
-                  </svg>
-                </button>
-                <button
-                  onClick={() => onSelectProject(dir)}
-                  title={dir}
-                  className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
-                >
+                    <svg
+                      viewBox="0 0 16 16"
+                      className={`h-3 w-3 transition-transform ${open ? "rotate-90" : ""}`}
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="M6 4l4 4-4 4" />
+                    </svg>
+                  </button>
+                </Tooltip>
+                <Tooltip label={dir} side="bottom" className="min-w-0 flex-1">
+                  <button
+                    onClick={() => onSelectProject(dir)}
+                    className="flex min-w-0 w-full items-center gap-1.5 text-left"
+                  >
                   <span className={`text-xs leading-none ${active ? "text-accent" : "text-t4"}`}>
                     <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M1.5 4.5A1.5 1.5 0 0 1 3 3h3l1.5 1.5H13a1.5 1.5 0 0 1 1.5 1.5v5A1.5 1.5 0 0 1 13 12.5H3A1.5 1.5 0 0 1 1.5 11z" />
                     </svg>
                   </span>
                   <span className={`truncate text-xs ${active ? "font-medium text-t1" : "text-t2"}`}>{short(dir)}</span>
-                </button>
+                  </button>
+                </Tooltip>
                 {/* 右侧控制簇：三控件等宽 20px、等间距（gap-1），删除按钮严格居中；「＋」中轴 72px 与头部「＋」同轴 */}
                 <div className="flex shrink-0 items-center gap-1">
                   {/* 给该项目新建会话（当前会话自动归档）；当前项目常显，其它行悬停显示。
                       锁按项目粒度（与服务端 409 同口径）：只锁本行项目运行中，其它项目运行不受影响。
                       隐藏用 invisible 而非 opacity-0：disabled:opacity-40 在样式表序上会顶掉 opacity-0，导致运行中集体显形 */}
-                  <button
-                    onClick={() => onNew(dir)}
-                    disabled={Boolean(busyMap[dir])}
-                    title="新建会话（当前会话自动归档）"
-                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-t4 transition-colors hover:bg-surface hover:text-t1 focus:visible disabled:opacity-40 ${
-                      active ? "visible" : "invisible group-hover:visible"
-                    }`}
-                  >
-                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                      <path d="M8 3.5v9M3.5 8h9" />
-                    </svg>
-                  </button>
+                  <Tooltip label="新建会话（当前会话自动归档）" side="bottom">
+                    <button
+                      onClick={() => onNew(dir)}
+                      disabled={Boolean(busyMap[dir])}
+                      className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-t4 transition-colors hover:bg-surface hover:text-t1 focus:visible disabled:opacity-40 ${
+                        active ? "visible" : "invisible group-hover:visible"
+                      }`}
+                    >
+                      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                        <path d="M8 3.5v9M3.5 8h9" />
+                      </svg>
+                    </button>
+                  </Tooltip>
                   {/* 移除项目：移出历史面板并清除该项目在 thincoder 中的会话历史（目录文件保留） */}
-                  <button
-                    onClick={() => onRemove(dir)}
-                    disabled={Boolean(busyMap[dir])}
-                    title="移除项目（目录文件保留，仅清除会话历史）"
-                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-t4 invisible transition-colors hover:bg-surface hover:text-red-400 focus:visible disabled:opacity-40 group-hover:visible"
-                  >
-                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M3 4.5h10M6.5 2.5h3M4.8 4.5l.5 9h5.4l.5-9M6.8 7v4.5M9.2 7v4.5" />
-                    </svg>
-                  </button>
+                  <Tooltip label="移除项目（目录文件保留，仅清除会话历史）" side="bottom">
+                    <button
+                      onClick={() => onRemove(dir)}
+                      disabled={Boolean(busyMap[dir])}
+                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-t4 invisible transition-colors hover:bg-surface hover:text-red-400 focus:visible disabled:opacity-40 group-hover:visible"
+                    >
+                      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 4.5h10M6.5 2.5h3M4.8 4.5l.5 9h5.4l.5-9M6.8 7v4.5M9.2 7v4.5" />
+                      </svg>
+                    </button>
+                  </Tooltip>
                   {/* 运行指示：与按钮等宽 20px 常驻位（空闲时空白，spinner 居中其中），保证三控件中心等距、各项目行按钮位置一致 */}
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center">
-                    {busyMap[dir] && <span className="spinner" title="该项目有任务运行中" />}
+                    {busyMap[dir] && (
+                      <Tooltip label="该项目有任务运行中" side="bottom">
+                        <span className="spinner" />
+                      </Tooltip>
+                    )}
                   </span>
                 </div>
               </div>
@@ -228,12 +239,12 @@ export default function HistoryPanel({
                           key={s.slot}
                           className="group flex items-start gap-1 rounded-lg px-2 py-1.5 transition-colors hover:bg-hover"
                         >
-                          <button
-                            onClick={() => onSwitch(s.slot)}
-                            disabled={running}
-                            title={`恢复槽位 #${s.slot}`}
-                            className="flex min-w-0 flex-1 items-start gap-2 text-left disabled:opacity-50"
-                          >
+                          <Tooltip label={`恢复槽位 #${s.slot}`} side="bottom" className="min-w-0 flex-1">
+                            <button
+                              onClick={() => onSwitch(s.slot)}
+                              disabled={running}
+                              className="flex min-w-0 w-full items-start gap-2 text-left disabled:opacity-50"
+                            >
                             <span className="mt-0.5 shrink-0 text-t4">
                               <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                                 <path d="M2 3.5h12v3H2zM3 6.5h10V13H3z" />
@@ -248,16 +259,18 @@ export default function HistoryPanel({
                                 #{s.slot} · {s.msgs} 条 · {s.date}
                               </span>
                             </span>
-                          </button>
-                          <button
-                            onClick={() => onDelete(s.slot)}
-                            title={`删除归档 #${s.slot}`}
-                            className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-t4 opacity-0 transition-colors hover:bg-surface hover:text-red-400 group-hover:opacity-100"
-                          >
-                            <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M4 4l8 8M12 4l-8 8" />
-                            </svg>
-                          </button>
+                            </button>
+                          </Tooltip>
+                          <Tooltip label={`删除归档 #${s.slot}`} side="bottom">
+                            <button
+                              onClick={() => onDelete(s.slot)}
+                              className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-t4 opacity-0 transition-colors hover:bg-surface hover:text-red-400 group-hover:opacity-100"
+                            >
+                              <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M4 4l8 8M12 4l-8 8" />
+                              </svg>
+                            </button>
+                          </Tooltip>
                         </div>
                       ))}
 

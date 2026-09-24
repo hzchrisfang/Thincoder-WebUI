@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { api } from "../lib/api"
 import type { JobInfo, JobRun } from "../lib/types"
+import Tooltip from "./Tooltip"
 
 interface Props {
   projects: string[]
@@ -182,26 +183,29 @@ export default function JobsPage({ projects, refreshTick }: Props) {
             return (
               <div key={job.id} className="rounded-2xl border border-line bg-surface px-4 py-3.5 shadow-xs">
                 <div className="flex items-center gap-3.5">
-                  <button
-                    onClick={() => toggle(job)}
-                    title={job.enabled ? "点击停用" : "点击启用"}
-                    className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${job.enabled ? "bg-accent" : "bg-line2"}`}
-                  >
-                    <span
-                      className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-xs transition-all ${
-                        job.enabled ? "left-[18px]" : "left-0.5"
-                      }`}
-                    />
-                  </button>
+                  <Tooltip label={job.enabled ? "点击停用" : "点击启用"} side="top">
+                    <button
+                      onClick={() => toggle(job)}
+                      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${job.enabled ? "bg-accent" : "bg-line2"}`}
+                    >
+                      <span
+                        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-xs transition-all ${
+                          job.enabled ? "left-[18px]" : "left-0.5"
+                        }`}
+                      />
+                    </button>
+                  </Tooltip>
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2.5">
                       <span className="truncate text-sm font-medium text-t1">{job.name}</span>
                       {st && <span className={`shrink-0 text-xs ${st.cls}`}>上次：{st.text}</span>}
                     </div>
-                    <div className="mt-1 truncate text-xs text-t4" title={job.prompt}>
-                      {job.scheduleText} · {short(job.project)} · 上限 {job.maxTurns} 轮 · {job.prompt}
-                    </div>
+                    <Tooltip label={job.prompt} side="top" className="mt-1 min-w-0 flex-1">
+                      <div className="min-w-0 w-full truncate text-xs text-t4">
+                        {job.scheduleText} · {short(job.project)} · 上限 {job.maxTurns} 轮 · {job.prompt}
+                      </div>
+                    </Tooltip>
                   </div>
 
                   <div className="shrink-0 text-right text-xs text-t4">
@@ -338,17 +342,18 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function IconBtn({ title, onClick, danger, children }: { title: string; onClick: () => void; danger?: boolean; children: React.ReactNode }) {
   return (
-    <button
-      onClick={onClick}
-      title={title}
-      className={`flex h-7 w-7 items-center justify-center rounded-lg border text-xs transition-colors ${
-        danger
-          ? "border-red-900 text-red-300 hover:bg-red-950"
-          : "border-line2 text-t3 hover:bg-hover hover:text-t1"
-      }`}
-    >
-      {children}
-    </button>
+    <Tooltip label={title} side="top">
+      <button
+        onClick={onClick}
+        className={`flex h-7 w-7 items-center justify-center rounded-lg border text-xs transition-colors ${
+          danger
+            ? "border-red-900 text-red-300 hover:bg-red-950"
+            : "border-line2 text-t3 hover:bg-hover hover:text-t1"
+        }`}
+      >
+        {children}
+      </button>
+    </Tooltip>
   )
 }
 
