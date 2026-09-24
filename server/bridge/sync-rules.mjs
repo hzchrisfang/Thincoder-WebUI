@@ -9,6 +9,9 @@
  *   目标文件里用 `<!-- webui-managed:begin -->` / `<!-- webui-managed:end -->`
  *   标记 webui 管理的内容块。每次同步只替换管理块，其余内容（用户自定义的
  *   全局指令）原样保留；不存在则该块追加在文件末尾。
+ *
+ *   规则源文件本身不存在时（公开分发不随包携带规则文件），整个同步静默
+ *   跳过——不写日志、不报错；其余读写失败照常抛出。
  */
 
 import { readFile, writeFile, mkdir } from "node:fs/promises"
@@ -25,9 +28,14 @@ export function getSourcePath() {
   return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "AGENTS.md")
 }
 
-/** 读仓库内规则源内容 */
+/** 读仓库内规则源内容；源不存在返回 null（调用方静默跳过） */
 async function readSource() {
-  return await readFile(getSourcePath(), "utf8")
+  try {
+    return await readFile(getSourcePath(), "utf8")
+  } catch (err) {
+    if (err?.code === "ENOENT") return null
+    throw err
+  }
 }
 
 /**
@@ -55,10 +63,10 @@ function normalize(text) {
     .trim()
 }
 
-/** 同步一次。返回 true=已写入/创建；false=无需变更。失败集合并抛出。 */
+/** 同步一次。返回 true=已写入/创建；false=无需变更（含规则源不存在时静默跳过）。其余失败照常抛出。 */
 export async function syncGlobalRules() {
   const source = await readSource()
-  if (!source.trim()) return false
+  if (!source?.trim()) return false
   await mkdir(dirname(TARGET), { recursive: true })
 
   let target = ""
