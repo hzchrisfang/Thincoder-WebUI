@@ -19,7 +19,7 @@ import { execSync } from "node:child_process"
 import { existsSync, readFileSync, statSync, readdirSync } from "node:fs"
 import { join, dirname, basename } from "node:path"
 import { pathToFileURL } from "node:url"
-import { enabledOnly } from "../store/mcp-prefs.mjs"
+import { enabledOnly, absorbNewServers } from "../store/mcp-prefs.mjs"
 
 const require = createRequire(import.meta.url)
 
@@ -278,10 +278,14 @@ async function assembleAgent(projectDir) {
     model: provider?.model ?? null,
   })
 
-  // MCP servers：并行连接，失败收集警告（与内核一致）；按项目启用偏好过滤（WebUI 层，见 store/mcp-prefs.mjs）
+  // MCP servers：并行连接，失败收集警告（与内核一致）；按项目启用偏好过滤（WebUI 层，见 store/mcp-prefs.mjs）。
+  // 组装时做收养观察：config 里新出现的 server（agent 上一轮装完尚未收尾 / 终端 TUI / 手改）登记并收养给本项目，
+  // 使「装完即可用」；服务进程生命周期内第一次观察只建基线不收养（见 prefs.absorbNewServers）
+  const allServers = config.mcp?.servers ?? []
+  absorbNewServers(allServers.map((s) => s.name), projectDir)
+  const servers = enabledOnly(allServers, projectDir)
   let mcpTools = []
   const mcpWarnings = []
-  const servers = enabledOnly(config.mcp?.servers ?? [], projectDir)
   if (servers.length) {
     const results = await Promise.allSettled(servers.map((srv) => t.mcp.connectMcpServer(srv)))
     for (let i = 0; i < results.length; i++) {

@@ -553,7 +553,8 @@ async function handleApi(req, res, url) {
     if (p === "/api/mcp/servers" && method === "POST") {
       const body = await readBody(req)
       try {
-        return json(res, 200, { ok: true, ...(await mcp.addServer(body)) })
+        // body.project = 安装发起项目（前端 MCP 页当前所选项目）：新 server 默认勾选给该项目
+        return json(res, 200, { ok: true, ...(await mcp.addServer({ ...body, project: normalizePath(body.project) })) })
       } catch (err) {
         return json(res, 400, { error: err?.message ?? String(err) })
       }
@@ -583,10 +584,10 @@ async function handleApi(req, res, url) {
       }
     }
     if (p === "/api/mcp/import" && method === "POST") {
-      // 粘贴 JSON 导入（mcpServers 等格式）；解析级错误 400，单条错误在 failed 里
+      // 粘贴 JSON 导入（mcpServers 等格式）；解析级错误 400，单条错误在 failed 里；project = 安装发起项目
       const body = await readBody(req)
       try {
-        return json(res, 200, { ok: true, ...(await mcp.importServers(body.json ?? body)) })
+        return json(res, 200, { ok: true, ...(await mcp.importServers(body.json ?? body, normalizePath(body.project))) })
       } catch (err) {
         return json(res, 400, { error: err?.message ?? String(err) })
       }

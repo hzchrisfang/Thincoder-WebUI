@@ -149,7 +149,7 @@ export default function McpPage({ project, running, refreshTick }: Props) {
     setImportResult(null)
     setErr(null)
     try {
-      const r = await api.importMcpServers(jsonText)
+      const r = await api.importMcpServers(jsonText, project)
       setImportResult(r)
       flash(`导入完成：新增 ${r.installed.length}，重名跳过 ${r.skipped.length}，失败 ${r.failed.length}`)
       if (r.installed.length) setJsonText("")
@@ -180,7 +180,7 @@ export default function McpPage({ project, running, refreshTick }: Props) {
     setBusy(true)
     setErr(null)
     try {
-      const p = payload()
+      const p = { ...payload(), project }
       const r = editing === "" ? await api.addMcpServer(p) : await api.updateMcpServer(p)
       setEditing(null)
       setTestResult(null)
@@ -315,7 +315,7 @@ export default function McpPage({ project, running, refreshTick }: Props) {
           ) : (
             "未选择项目（只显示配置）"
           )}
-          <span className="ml-2">· 每行「本项目」勾选 = 该 server 是否加载到当前项目（新项目默认全不勾选，按需启用，互不影响）</span>
+          <span className="ml-2">· 每行「本项目」勾选 = 该 server 是否加载到当前项目（新装 server 默认只勾选安装发起项目，其余项目全不勾）</span>
           {status?.dirty && <span className="ml-2 text-amber-400">有变更待本轮结束后应用</span>}
         </div>
       </div>

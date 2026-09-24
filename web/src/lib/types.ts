@@ -345,7 +345,7 @@ export interface McpStatus {
   dirty: boolean
 }
 
-/** GET /api/mcp 顶层附带：当前项目显式启用的 server 名单（前端勾选框用；空数组 = 全不启用） */
+/** GET /api/mcp 顶层附带：当前项目显式启用的 server 名单（前端勾选框用；空数组 = 全不启用；无记录项目 = 全不启用） */
 export interface McpConfigResponse {
   servers: McpServerInfo[]
   presets: McpPreset[]

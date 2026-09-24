@@ -25,6 +25,24 @@
 - **用量看板**：每次 LLM 调用落库（node:sqlite），按日/按模型聚合
 - **定时任务 / MCP 管理 / 追问建议 / 局域网手机访问（二维码）** 等辅助能力
 
+## 界面预览
+
+左边导航、中间对话、右侧任务与子代理面板，主要界面就这么几个（点击图片可看原图）：
+
+<p align="center">
+  <a href="docs/screenshots/chat-light.png"><img src="docs/screenshots/chat-light.png" width="250" alt="对话工作台 · 浅色主题"></a>
+  <a href="docs/screenshots/chat-dark.png"><img src="docs/screenshots/chat-dark.png" width="250" alt="对话工作台 · 深色主题"></a>
+  <a href="docs/screenshots/usage.png"><img src="docs/screenshots/usage.png" width="250" alt="用量看板"></a>
+</p>
+<p align="center"><sub>对话工作台（浅色 / 深色两套主题）· 用量看板</sub></p>
+
+<p align="center">
+  <a href="docs/screenshots/mcp.png"><img src="docs/screenshots/mcp.png" width="250" alt="MCP 服务器管理"></a>
+  <a href="docs/screenshots/settings.png"><img src="docs/screenshots/settings.png" width="250" alt="设置"></a>
+  <a href="docs/screenshots/about.png"><img src="docs/screenshots/about.png" width="250" alt="关于"></a>
+</p>
+<p align="center"><sub>MCP 服务器 · 设置 · 关于</sub></p>
+
 ## 环境要求
 
 - **Node.js ≥ 22.5**
@@ -55,6 +73,57 @@ cat ~/.thincoder-webui/token
 ```
 
 登录后：**添加项目目录（白名单制）→ 选一个模型供应商 → 发起对话**。局域网设备（如手机）访问 `http://<你的IP>:8181` 用同一 token 登录即可（登录页有二维码）。
+
+## 装成「应用」用（像本地软件一样打开）
+
+不习惯在浏览器标签页里用它？Chrome / Edge 和 Safari 都能把它变成一个独立窗口的应用：有自己的图标，点开即用，没有地址栏与标签页，和别的软件一样待在程序坞 / 开始菜单里。
+
+- **Chrome / Edge（Chromium 系）**：打开 WebUI，点地址栏右侧的「安装」图标 → 在弹出的提示里点「安装」。
+- **Safari（macOS）**：点工具栏的分享按钮 → 「添加到程序坞」。（分享菜单里没有这一项，说明系统版本较旧，升级 macOS 后就有。）
+
+<p align="center">
+  <img src="docs/screenshots/chrome-install.png" width="380" alt="Chrome：地址栏右侧的安装图标">
+  <img src="docs/screenshots/safari-dock.png" width="250" alt="Safari：分享菜单里的「添加到程序坞」">
+</p>
+<p align="center"><sub>左：Chrome 地址栏右侧的「安装」入口　右：Safari 分享菜单里的「添加到程序坞」</sub></p>
+
+装好之后第一次打开若提示未授权，用登录链接 `http://localhost:8181/login?token=…` 打开一次即可（登录状态保存 1 年）；token 存于 `~/.thincoder-webui/token`。手机端同理——Safari / Chrome 的分享菜单里选「添加到主屏幕」。
+
+## 更新
+
+更新只换代码与前端产物，不碰数据：访问 token、项目白名单、用量库在 `~/.thincoder-webui`，会话记录与内核配置在 `~/.thincoder`（内核数据目录）——都不在代码目录里。
+
+### 一键更新（推荐）
+
+打开左侧导航的「关于」页（见上方界面预览），它会自动去公开仓查最新版本：显示「已是最新」就不用管；显示「有可用更新：vX.Y.Z」时旁边会出现「一键更新」按钮——点它、确认，服务端依次自动完成 **拉取新代码（`git fetch` + 快进合并）→ 安装依赖 → 重新构建前端 → 自动换入**，全过程在页面上实时打日志（关掉页面也继续跑，重开自动恢复）。
+
+**完成后需手动重启服务**：在启动服务的那个终端按 `Ctrl+C` 停掉，再 `npm start`。
+
+几个前置条件（不满足会拒绝并说明原因，不会硬来）：
+
+- 目录必须是**从公开仓 clone 出来的 git 仓库**——fork 过、改过代码、与公开仓历史分叉的会被拒绝，需手动处理；
+- **工作树必须干净**：有未提交的改动会被拒绝（不会自动 stash），请先提交或另存；
+- **不能有任务在跑**：任一项目正在跑 agent 时会拒绝，等跑完再更新；
+- 更新期间不要在本机对 WebUI 目录执行别的 `git` / `npm` 命令。
+
+万一失败，会停在失败的那一步并在页面显示步骤名与日志；失败之前已完成的部分保留（比如代码已经拉下来），正在服务的旧版前端不受影响，可以排查后重试。
+
+### 手动更新
+
+和上面是同一件事，自己敲命令：
+
+```bash
+cd Thincoder-WebUI
+
+git pull           # 拉取新代码
+npm install        # 依赖有变化时装（postinstall 会重新给内核打兼容补丁）
+npm run build      # 重新构建前端，产物落在 server/static
+
+# 重启服务：在启动终端按 Ctrl+C 停掉，再
+npm start
+```
+
+> 服务不会热更新：改完代码、构建完，都要重启才生效。每个版本改了什么见 [CHANGELOG.md](./CHANGELOG.md)。
 
 ## 安全须知
 

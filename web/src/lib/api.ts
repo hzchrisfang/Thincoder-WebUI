@@ -155,8 +155,8 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ project, enabled }),
     }),
-  addMcpServer: (body: McpServerPayload) =>
-    request<{ ok: boolean; server: McpServerInfo; results: McpOpResult[] }>("/api/mcp/servers", {
+  addMcpServer: (body: McpServerPayload & { project?: string | null }) =>
+    request<{ ok: boolean; server: McpServerInfo; results: McpOpResult[]; adopted?: string[] }>("/api/mcp/servers", {
       method: "POST",
       body: JSON.stringify(body),
     }),
@@ -172,8 +172,8 @@ export const api = {
     }),
   testMcpServer: (body: McpServerPayload | { name: string }) =>
     request<McpTestResult>("/api/mcp/test", { method: "POST", body: JSON.stringify(body) }),
-  importMcpServers: (json: string) =>
-    request<McpImportResult>("/api/mcp/import", { method: "POST", body: JSON.stringify({ json }) }),
+  importMcpServers: (json: string, project?: string | null) =>
+    request<McpImportResult>("/api/mcp/import", { method: "POST", body: JSON.stringify({ json, project }) }),
   reconnectMcp: (project: string | null, name?: string) =>
     request<{ ok: boolean; results: McpOpResult[] }>(
       `/api/mcp/reconnect${project ? `?project=${encodeURIComponent(project)}` : ""}`,

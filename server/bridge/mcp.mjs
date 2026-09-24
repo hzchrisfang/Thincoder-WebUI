@@ -125,16 +125,17 @@ function writeServers(t, servers) {
   t.config.saveConfig(raw)
 }
 
-/** 新增（重名即拒）：写配置 → 热更新实例池 */
+/** 新增（重名即拒）：写配置 → 热更新实例池。project = 安装发起项目（带则默认勾选给该项目） */
 export async function addServer(body) {
   const t = await loadThincoder()
   const srv = normalizeServer(body)
   const servers = t.config.loadConfig().mcp?.servers ?? []
   if (servers.some((s) => s.name === srv.name)) throw new Error(`MCP server "${srv.name}" 已存在（可编辑或先删除）`)
   writeServers(t, [...servers, srv])
+  const adopt = prefs.absorbNewServers([...servers.map((s) => s.name), srv.name], body?.project ?? null, { adopt: [srv.name], force: true })
   const results = await applyServerToPool(t, srv)
   emit("add", srv.name, results)
-  return { server: maskServer(srv), results }
+  return { server: maskServer(srv), results, adopted: adopt.adopted }
 }
 
 /** 编辑（按 name 定位，名称不可改）：写配置 → 重连 */
@@ -267,8 +268,8 @@ export function parseMcpJson(input) {
   return { items, failed }
 }
 
-/** 批量导入：解析 → 写配置（同名跳过）→ 逐个热更新实例池 */
-export async function importServers(input) {
+/** 批量导入：解析 → 写配置（同名跳过）→ 逐个热更新实例池。project = 安装发起项目（带则默认勾选给该项目） */
+export async function importServers(input, project = null) {
   const t = await loadThincoder()
   const { items, failed } = parseMcpJson(input)
   const servers = t.config.loadConfig().mcp?.servers ?? []
@@ -284,7 +285,11 @@ export async function importServers(input) {
     toApply.push(srv)
     installed.push({ name: srv.name, wrapped, results: [] })
   }
-  if (toApply.length) writeServers(t, servers)
+  if (toApply.length) {
+    writeServers(t, servers)
+    // 传全量 server 名（旧格式项目展开基座需要全量名单，只传新名字会丢掉该项目原本启用的其它 server）
+    prefs.absorbNewServers(servers.map((s) => s.name), project, { adopt: toApply.map((s) => s.name), force: true })
+  }
   for (const srv of toApply) {
     const results = await applyServerToPool(t, srv)
     installed.find((x) => x.name === srv.name).results = results
@@ -377,12 +382,16 @@ export async function reconnect(name, onlyProject) {
   return { results }
 }
 
-/** 运行收尾后的延迟冲刷：按最新配置 + 按项目启用偏好整体重连该项目的 MCP 工具 */
+/** 运行收尾：收养观察（config 里出现未登记 server = WebUI 之外安装 → 收养给本项目）+ 延迟冲刷。
+ *  收养观察每轮收尾必跑（agent 改 config 不置 _mcpDirty，不能拿它当观察条件；无新名字时 absorb 内部不写盘）；
+ *  收养命中则本项目强制整体重连——agent 本轮装的 server，下一轮对话即可直接用，无需重开项目。 */
 export async function flushDirty(project) {
-  const entry = poolEntries().get(project)
-  if (!entry?._mcpDirty) return []
-  entry._mcpDirty = false
   const t = await loadThincoder()
+  const all = t.config.loadConfig().mcp?.servers ?? []
+  const absorb = prefs.absorbNewServers(all.map((s) => s.name), project)
+  const entry = poolEntries().get(project)
+  if (!entry?._mcpDirty && !absorb.adopted.length) return []
+  entry._mcpDirty = false
   const results = await resyncEntry(t, project, entry)
   emit("flush", null, results)
   return results
