@@ -1,5 +1,5 @@
 import { useState } from "react"
-import type { ApprovalMode, ProviderStatus, SubagentItem, ThinkingInfo } from "../lib/types"
+import type { ApprovalMode, ProviderStatus, SubagentItem, SubagentStats, ThinkingInfo } from "../lib/types"
 import Tooltip from "./Tooltip"
 
 interface Props {
@@ -15,6 +15,8 @@ interface Props {
   mode: ApprovalMode
   onMode: (m: ApprovalMode) => void
   running: boolean
+  /** 挂起会话中（后台池仍 live）：会话仍忙，停止键保持可达 */
+  suspended: boolean
   queued: number
   usage: { prompt: number; completion: number }
   tasks: { title: string; status: string }[]
@@ -24,6 +26,8 @@ interface Props {
   onToggleTasks: () => void
   /** 子代理面板（agent 派发的子任务进度） */
   subagents: SubagentItem[]
+  /** 子代理进度统计（已派发/已结束/失败）：按钮上的「已结束/已派发」数字取它 */
+  subagentStats: SubagentStats | null
   showSubagents: boolean
   onToggleSubagents: () => void
   // 左右面板开关
@@ -62,6 +66,26 @@ export default function TopBar(p: Props) {
   const done = p.tasks.filter((t) => t.status === "done").length
   const totalTok = p.usage.prompt + p.usage.completion
   const subRunning = p.subagents.filter((s) => s.status === "running").length
+  const subQueueing = p.subagents.filter((s) => s.status === "queued").length
+  // 按钮前的转圈：只要还有子代理在活动就转——running（在跑）∨ queued（等槽位 / 等依赖）
+  // ∨ pending（已收尾、等消化）。挂起会话里两轮消化之间 running 会被复位，pending 兼住；
+  // 池里只剩排队条目时也转（用户裁定 2026-09-24：queued 计入）。
+  const subPending = p.subagents.filter((s) => s.pending === true).length
+  const subBusy = subRunning > 0 || subQueueing > 0 || subPending > 0
+  // 进度式数字：已结束/已派发（分母用服务端**单调计数**——面板行有 20 条自裁上限，拿行数当分母会永远卡在 20）
+  const sd = p.subagentStats
+  const sdDispatched = sd?.dispatched ?? 0
+  const sdFinished = Math.min(sd?.finished ?? 0, sdDispatched)
+  const sdFailed = sd?.failed ?? 0
+  // 悬停明细：失败数 / 排队数（数字只在 > 0 时出现，与「dispatched=0 不显数字」同为克制策略）
+  const subTip = [
+    "子代理面板（agent 派发的 explore / coder / 审阅等子任务进度）",
+    sdDispatched > 0 ? `本会话已结束 ${sdFinished} / 已派发 ${sdDispatched}` : "",
+    sdFailed > 0 ? `失败 ${sdFailed}` : "",
+    subQueueing > 0 ? `排队 ${subQueueing}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ")
   // 模型胶囊：已配置且有多渠道（或想进设置）时可点，弹出渠道切换菜单
   const [provMenu, setProvMenu] = useState(false)
   const provClickable = p.provider !== null
@@ -292,8 +316,8 @@ export default function TopBar(p: Props) {
         </button>
       </Tooltip>
 
-      {/* 子代理面板：徽标 = 运行中数量（有运行条目时按钮内是 spinner，与历史面板的运行指示器同款） */}
-      <Tooltip label="子代理面板（agent 派发的 explore / coder / 审阅等子任务进度）" side="bottom">
+      {/* 子代理面板：数字 = 已结束/已派发（任务面板同款进度式）；有在跑/待消化的子代理时按钮前是 spinner */}
+      <Tooltip label={subTip} side="bottom">
         <button
           onClick={p.onToggleSubagents}
           aria-pressed={p.showSubagents}
@@ -301,7 +325,7 @@ export default function TopBar(p: Props) {
             p.showSubagents ? "bg-accent-soft text-accent" : "text-t3 hover:bg-hover hover:text-t1"
           }`}
         >
-          {subRunning > 0 ? (
+          {subBusy ? (
             <span className="spinner" />
           ) : (
             <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -312,8 +336,10 @@ export default function TopBar(p: Props) {
             </svg>
           )}
           子代理
-          {p.subagents.length > 0 && (
-            <span className="tabular-nums opacity-80">{subRunning > 0 ? subRunning : p.subagents.length}</span>
+          {sdDispatched > 0 && (
+            <span className="tabular-nums opacity-80">
+              {sdFinished}/{sdDispatched}
+            </span>
           )}
         </button>
       </Tooltip>
@@ -346,8 +372,8 @@ export default function TopBar(p: Props) {
 
       <span className="h-5 w-px shrink-0 bg-line" />
 
-      {/* 运行状态 / 停止 */}
-      {p.running ? (
+      {/* 运行状态 / 停止：挂起期停止键必须可达（两轮消化之间 running 可能已复位，可用 suspended 兜住） */}
+      {p.running || p.suspended ? (
         <Tooltip label="中断当前运行" side="bottom">
           <button
             onClick={p.onStop}

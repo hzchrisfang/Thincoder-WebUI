@@ -38,6 +38,18 @@ function tone(ac: AudioContext, freq: number, at: number, dur: number, peak: num
 
 export type SoundKind = "alert" | "done"
 
+/** 长任务判定：一轮运行达到此时长（毫秒）才响完成音（短问答不吵） */
+export const LONG_TASK_MS = 30_000
+
+/**
+ * 长任务完成音判据（单一源——调用点的项目可见性不属于本函数：音是「全局响」的，与审批 alert 同口径）。
+ * - 跑满 `LONG_TASK_MS` 才响；
+ * - `digest`（自动消化轮）恒不响：那是内核自开的一轮，没有人在等它。
+ */
+export function shouldRingDone(elapsedMs: number, digest: boolean) {
+  return !digest && elapsedMs >= LONG_TASK_MS
+}
+
 /**
  * 播放提示音（各约 0.3 秒的双音）：
  * - alert（审批 / 提问弹窗）— 上行 E5→A5，语义「需要你处理」

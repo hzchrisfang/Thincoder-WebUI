@@ -253,13 +253,19 @@ export default function Timeline({
               parts.push(`Token ↑ ${fmtTokens(it.prompt)} / ↓ ${fmtTokens(it.completion)}`)
             }
             return (
-              <Tooltip key={it.id} label="本轮运行完成时间与 token 消耗" side="top">
-                <div className="rise flex items-center gap-3 text-[11px] text-t4">
-                  <span className="h-px flex-1 bg-line" />
-                  <span className="shrink-0 tabular-nums">{parts.join(" · ")}</span>
-                  <span className="h-px flex-1 bg-line" />
-                </div>
-              </Tooltip>
+              // 收尾行**不用 Tooltip**（用户裁定：时间/用量这行不需要悬停说明）；顺带在结构上根治了
+              // 宽度塌陷——Tooltip 包裹层是 inline-flex（内容宽），里层靠 flex-1 撑满的两条分隔线
+              // 会塌成 0 宽（0.8.1 起的老问题；同族第二例见子代理面板行）。块级 div 本身即满行宽。
+              <div key={it.id} className="rise flex w-full items-center gap-3 text-[11px] text-t4">
+                <span className="h-px flex-1 bg-line" />
+                <span className="flex shrink-0 items-center gap-1.5 tabular-nums">
+                  <span>{parts.join(" · ")}</span>
+                  {it.digest && (
+                    <span className="rounded-full bg-sky-950 px-1.5 py-0.5 text-[10px] font-medium text-sky-300">自动消化</span>
+                  )}
+                </span>
+                <span className="h-px flex-1 bg-line" />
+              </div>
             )
           }
 

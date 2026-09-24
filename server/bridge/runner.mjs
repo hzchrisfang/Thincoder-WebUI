@@ -12,6 +12,7 @@ import { getAgent, loadThincoder, providerStatus, poolEntries } from "./thincode
 import { diffForTool } from "./diff.mjs"
 import * as rewind from "./rewind.mjs"
 import * as subagents from "./subagents.mjs"
+import { driveSuspension } from "./suspension.mjs"
 import { recordUsage } from "../store/usage.mjs"
 
 const states = new Map() // projectDir -> run state
@@ -33,12 +34,18 @@ const RESULT_PREVIEW_LIMIT = 8000
 
 // 看门狗（坑 39/41：内核压缩调用不接 AbortSignal，网络停滞时"停止"叫不动）
 const STALL_MS = Number(process.env.TCW_STALL_MS ?? 180_000) // 无任何事件多久算停滞（默认 3 分钟）
+// 挂起期阈值（D5）：挂起会话没有用户输入，但池里可能长时间在跑超长工具 / 慢首 token / 排队静默
+// ——普通阈值会误杀。判据不变（任何内核回调 touch() 续命），只是窗口放宽到 10 分钟。
+const SUSPEND_STALL_MS = Number(process.env.TCW_SUSPEND_STALL_MS ?? 600_000)
 const STALL_FORCE_MS = Number(process.env.TCW_STALL_FORCE_MS ?? 15_000) // 停滞中止后多久仍未结束 → 强制释放
 const WATCH_INTERVAL_MS = Math.max(1000, Math.min(20_000, Math.floor(STALL_MS / 4)))
 
 function freshState() {
   return {
     busy: false, queue: [], abort: null, mode: "suggest", allowlist: new Set(),
+    // 挂起会话态：suspended = 驱动在跑（busy 保持 true）；suspCounts = 最近一次计数播报
+    // （重连快照读它）；suspWake = 驱动等待栓的用户唤醒口（chat 落队列后兑现）
+    suspended: false, suspCounts: null, suspWake: null,
     // 看门狗状态
     lastEventAt: 0, waitingHuman: false, dead: false, stall: false, deadline: 0, timer: null,
   }
@@ -65,6 +72,8 @@ export function chat(project, text) {
   const msgId = randomUUID()
   st.queue.push({ text, msgId })
   bus.emit({ type: "queued", project, queued: st.queue.length })
+  // 挂起会话期：新消息唤醒驱动（用户输入优先于消化轮——不必等下一次 settle）
+  st.suspWake?.()
   pump(project)
   return msgId
 }
@@ -196,12 +205,16 @@ export function snapshot() {
       mode: st?.mode ?? "suggest",
       planMode: entry?.agent.planMode ?? false,
       provider: entry ? providerStatus(entry) : null,
+      // 挂起会话态（重连一致性：挂起期 busy 必为 true，否则前端显空闲、服务端 409 闸门与显示不一致）
+      suspended: st?.suspended ?? false,
+      counts: st?.suspended ? (st.suspCounts ?? null) : null,
     }
   }
   return {
     projects,
     active,
     subagents: subagents.snapshotAll(),
+    subagentStats: subagents.snapshotStatsAll(), // 0.9.0 进度统计（已派发/已结束/失败）
     pendingApprovals: [...pendingPerms.values()].map((p) => ({ reqId: p.reqId, project: p.project, name: p.name, args: p.args, diff: p.diff ?? null })),
     pendingQuestions: [...pendingQuestions.values()].map((q) => ({ reqId: q.reqId, project: q.project, question: q.question, options: q.options })),
   }
@@ -233,7 +246,7 @@ async function pump(project) {
   if (st.busy || st.queue.length === 0) return
   st.busy = true
   const job = st.queue.shift()
-  bus.emit({ type: "run_start", project, queued: st.queue.length })
+  bus.emit({ type: "run_start", project, queued: st.queue.length, digest: false })
 
   // 盲区消灭：abort 控制器与看门狗在一切 await 之前就位。getAgent 组装（MCP 连接、
   // memory/team 同步）可能长时间挂起，那段窗口里停止按钮曾是空操作（st.abort 为 null）、
@@ -255,7 +268,8 @@ async function pump(project) {
     agent = entry.agent
   } catch (err) {
     bus.emit({ type: "error", project, message: `agent 初始化失败：${err.message}` })
-    finishRun(project, st, agent)
+    finishTurn(project, st, agent, false)
+    finishSession(project, st)
     return
   }
 
@@ -265,13 +279,16 @@ async function pump(project) {
   // （routes.mjs）；登记表另按终态行上限自裁（subagents.mjs 的 prune）。
 
   // 会话回退：为"这条消息发出之前"的状态打点（工作区树快照 + 会话文件副本）。
-  // 失败/降级都不阻塞运行，只提示。
-  try {
-    const r = await rewind.capture(project, { msgId: job.msgId, text: job.text })
-    for (const w of r.warnings ?? []) bus.emit({ type: "system", project, text: w })
-  } catch (err) {
-    bus.emit({ type: "system", project, text: `会话回退打点失败（不影响本次运行）：${err.message}` })
+  // 失败/降级都不阻塞运行，只提示。用户回合专用（消化轮是系统轮，不产生回退点）。
+  const captureRewind = async (j) => {
+    try {
+      const r = await rewind.capture(project, { msgId: j.msgId, text: j.text })
+      for (const w of r.warnings ?? []) bus.emit({ type: "system", project, text: w })
+    } catch (err) {
+      bus.emit({ type: "system", project, text: `会话回退打点失败（不影响本次运行）：${err.message}` })
+    }
   }
+  await captureRewind(job)
 
   // 看门狗心跳：任何内核回调都算"还活着"；zombie（dead）一律吞掉
   const touch = () => { st.lastEventAt = Date.now() }
@@ -396,40 +413,132 @@ async function pump(project) {
     },
   }
 
-  try {
-    await t.agent.runAgent(agent, job.text, callbacks, { signal: abortCtrl.signal })
-    if (!st.dead) bus.emit({ type: "done", project })
-  } catch (err) {
-    if (st.dead) {
-      // zombie 运行（已被强制释放）：一切收尾都不再属于当前状态，静默丢弃
-    } else if (abortCtrl.signal.aborted) {
-      bus.emit({ type: "aborted", project })
-    } else if (err?.name === "ContinueError") {
-      bus.emit({ type: "paused", project, message: `达到轮数上限（${err.turn} 轮），任务已暂停，可继续对话推进` })
-    } else {
-      bus.emit({ type: "error", project, message: err?.message ?? String(err) })
+  // 消化轮回调（D3 静音 + 机械拒绝）：去掉权限/问答 handler 的一份——内核据此走
+  // 「无 onPermissionRequest ⇒ allowed=false（不弹窗、不悬挂）」「无 onQuestion ⇒ 抛错」
+  // （dispatch.mjs / tools/question.mjs），= CLI 手动档 askPermission/askBatchPermission/
+  // askQuestion 三 null 的等价装配。其余展示回调（token/工具/用量…）照旧，消化轮正文正常上屏。
+  const digestCallbacks = { ...callbacks, onPermissionRequest: undefined, onQuestion: undefined }
+
+  // 挂起会话驱动可用性（内核面缺失 = 旧内核）：两处同判——不传 suspDriven（否则 settled 只留池、
+  // 无人消化）+ 不进挂起会话，整体退回今日的 headless 档。
+  const canSuspend = Boolean(t.suspension)
+
+  /**
+   * 回合执行器（用户回合 / 挂起期用户回合 / 消化轮统一入口）：
+   * - 用户回合：普通语义（callbacks 全档、suspDriven 恒为 canSuspend）——挂起会话里的用户回合
+   *   由驱动把 `agent._suspended` 翻 false（settle 即冻结 + 条目留池），与普通回合一致；
+   * - 消化轮（autoTurn）：空输入 + 去权限/问答回调；撞轮数上限时手动档静默停（部分消化留在
+   *   历史、会话回挂起，system 明示）/ full-auto 档照 CLI 自动续跑；
+   * - 每轮收尾：saveSession + finishTurn（面板同步 + run_end，带 digest 标记）。
+   * `started`：本轮 run_start / 回退打点已由 pump 提前做过（首个用户回合——早发 run_start 让
+   * 前端立刻进入运行态，不等 agent 组装/MCP 连接）。
+   */
+  const runTurn = async (j, { digest = false, started = false, upstreamTurn = false } = {}) => {
+    if (!started) {
+      bus.emit({ type: "run_start", project, queued: st.queue.length, digest })
+      if (!digest) await captureRewind(j)
     }
-  } finally {
-    if (st.timer) { clearInterval(st.timer); st.timer = null }
+    const signal = st.abort?.signal ?? abortCtrl.signal
+    const base = { signal, autoTurn: digest, upstreamTurn, suspDriven: canSuspend }
+    if (!digest) {
+      try {
+        await t.agent.runAgent(agent, j.text, callbacks, base)
+        if (!st.dead) bus.emit({ type: "done", project })
+      } catch (err) {
+        reportRunError(project, st, signal, err)
+      } finally {
+        if (!st.dead) {
+          saveSessionSafe(t, agent, project)
+          // 本回合是否**即将进入挂起会话**（判定与服务端进驱动那一处同源）：随 run_end 下发，
+          // 前端据此跳过追问建议旁路——挂起期会话忙（409），那条请求注定空返。
+          // 必须在**本回合收尾时**算：`suspension{active:true}` 晚于 run_end 发出，前端那一刻
+          // 还不知道会不会挂起（所以前端单靠 `!suspended` 挡不住这条）。
+          const suspending = canSuspend && t.suspension.poolLive(agent)
+          finishTurn(project, st, agent, false, suspending)
+        }
+      }
+      return
+    }
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await t.agent.runAgent(agent, "", digestCallbacks, { ...base, resume: attempt > 0 })
+        break
+      } catch (err) {
+        if (err?.name !== "ContinueError") {
+          reportRunError(project, st, signal, err)
+          break
+        }
+        // 轮数上限：full-auto（无人值守授权）自动续跑；手动档静默停——部分消化已在历史里
+        if (agent.autoApprove && !st.dead && !signal.aborted) continue
+        if (!st.dead) {
+          bus.emit({
+            type: "system", project,
+            text: `后台报告消化达到轮数上限（${err.turn} 轮），本轮消化停止；已读入的部分留在会话历史，下一条消息可继续推进`,
+          })
+        }
+        break
+      }
+    }
     if (!st.dead) {
       saveSessionSafe(t, agent, project)
-      finishRun(project, st, agent)
+      finishTurn(project, st, agent, true)
+    }
+  }
+
+  try {
+    await runTurn(job, { started: true })
+  } finally {
+    // 看门狗**不在此处摘**：挂起窗口（下面那段）必须仍有停滞看护——清理权交给 finishSession
+    // （会话真正收尾），阈值由 armWatchdog 按 `st.suspended` 取放宽档（TCW_SUSPEND_STALL_MS）。
+    // 早摘的代价：挂起期（含消化轮自身那条长 LLM 调用）完全失去自动中止，池项永不 settle 时
+    // 会话永久 busy（只能手点 Stop）；`st.suspended` 分支也会因定时器已死而恒不可达。
+    if (!st.dead) {
+      saveSessionSafe(t, agent, project)
+      // 回合结束后台池仍 live ⇒ 进入挂起会话（会话级 busy 保持 true）：池项 settle 即自动开
+      // 消化轮把报告读进会话，池空自然退出；用户 Stop ⇒ 会话 controller 中止 ⇒ 驱动清场。
+      if (canSuspend && !abortCtrl.signal.aborted && t.suspension.poolLive(agent)) {
+        await driveSuspension({ project, st, agent, t, runTurn })
+      }
+      finishSession(project, st)
     }
   }
 }
 
-function finishRun(project, st, agent = null) {
+/** 运行期错误 → 事件（用户回合 / 消化轮共用；zombie 运行一律静默丢弃）。 */
+function reportRunError(project, st, signal, err) {
+  if (st.dead) return // zombie 运行（已被强制释放）：一切收尾都不再属于当前状态
+  if (signal?.aborted) bus.emit({ type: "aborted", project })
+  else if (err?.name === "ContinueError") bus.emit({ type: "paused", project, message: `达到轮数上限（${err.turn} 轮），任务已暂停，可继续对话推进` })
+  else bus.emit({ type: "error", project, message: err?.message ?? String(err) })
+}
+
+/**
+ * 回合收尾（每轮一次，含消化轮）：把异步子代理的最终报告挂到面板 + 按内核池校正状态
+ * （两层自身 try/catch，这里再加一层——报告同步的任何意外不得影响 run_end 协议）→ 广播 run_end。
+ * `digest` 标记区分「用户回合」与「自动消化轮」——前端据此跳过完成音 / 追问建议（机制静音）。
+ */
+function finishTurn(project, st, agent = null, digest = false, suspending = false) {
   if (st.dead) return
-  st.busy = false
-  st.abort = null
-  if (st.timer) { clearInterval(st.timer); st.timer = null } // 初始化失败早退路径也会带走看门狗
-  // 收尾前：把异步子代理的最终报告挂到面板 + 按内核池校正状态（两层自身 try/catch，这里再加一层——
-  // 报告同步的任何意外不得影响 run_end 协议）
   try {
     subagents.syncReports(project, agent)
     subagents.reconcilePool(project, agent)
   } catch { /* 子代理收尾失败不阻塞运行收尾 */ }
-  bus.emit({ type: "run_end", project, queued: st.queue.length })
+  bus.emit({ type: "run_end", project, queued: st.queue.length, digest, suspending })
+}
+
+/**
+ * 会话收尾（pump 退出 / agent 初始化失败早退 / 挂起会话结束）：释放运行态 + 收尾钩子 + 队列续跑。
+ * 与 finishTurn 分离的原因：消化轮是同一会话内的轮次，不能每轮都触发收尾钩子（mcp.flushDirty）
+ * 或提前把 busy 放开（挂起期必须保持 busy——会话切换/回退/斜线命令的 409 闸门靠它）。
+ */
+function finishSession(project, st) {
+  if (st.dead) return
+  st.busy = false
+  st.abort = null
+  st.suspended = false // 双保险（驱动 finally 已复位；异常路径不得留下「挂起中」）
+  st.suspWake = null
+  st.suspCounts = null
+  if (st.timer) { clearInterval(st.timer); st.timer = null } // 初始化失败早退路径也会带走看门狗
   for (const hook of runEndHooks) {
     try { hook(project) } catch { /* 收尾钩子失败不阻塞队列 */ }
   }
@@ -446,11 +555,13 @@ function armWatchdog(project, st) {
     }
     if (st.waitingHuman) return // 在等人审批/回答：不是停滞
     const now = Date.now()
+    // 挂起期阈值放宽（D5）：判据不变（任何内核回调 touch() 续命），只是窗口取 SUSPEND_STALL_MS
+    const stallMs = st.suspended ? Math.max(STALL_MS, SUSPEND_STALL_MS) : STALL_MS
     if (!st.stall) {
-      if (now - st.lastEventAt < STALL_MS) return
+      if (now - st.lastEventAt < stallMs) return
       st.stall = true
       st.deadline = now + STALL_FORCE_MS
-      bus.emit({ type: "system", project, text: `${STALL_MS >= 60_000 ? `${Math.round(STALL_MS / 60000)} 分钟` : `${Math.round(STALL_MS / 1000)} 秒`}无任何事件（疑似网络/上游停滞），正在自动中止…` })
+      bus.emit({ type: "system", project, text: `${stallMs >= 60_000 ? `${Math.round(stallMs / 60000)} 分钟` : `${Math.round(stallMs / 1000)} 秒`}无任何事件（疑似网络/上游停滞），正在自动中止…` })
       try { st.abort?.abort() } catch { /* 忽略 */ }
       return
     }
@@ -464,6 +575,10 @@ function forceRelease(project, st) {
   st.dead = true
   st.busy = false
   st.abort = null
+  // 挂起驱动可能正停在「等 settle / wake / abort」上：强释路径（今天恒由看门狗先 abort 触发）
+  // 也必须兑现一次唤醒——否则 `st.dead` 只在循环头可见，驱动永远醒不过来（挂起胶囊粘住 +
+  // 会话永不收尾）。显式唤醒后驱动走它已有的 st.dead 退场分支（跳过残差注入与面板收尾）。
+  st.suspWake?.()
   const carry = st.queue.slice()
   st.queue.length = 0
   poolEntries().delete(project) // 弃用卡死 agent；下个 run 会 getAgent 重建并从落盘会话恢复
@@ -476,7 +591,7 @@ function forceRelease(project, st) {
   // zombie 运行不再走 finishRun（st.dead）——活跃行就地落 ended（终态行保留：面板行是会话级
   // 活动记录），免停在 running/转圈；此后该 agent 的一切回调已被 st.dead 闸门丢弃，不会复活行
   subagents.reconcilePool(project, null)
-  bus.emit({ type: "run_end", project, queued: carry.length }) // 与正常收尾协议一致：前端靠 run_end 复位 running
+  bus.emit({ type: "run_end", project, queued: carry.length, digest: false, suspending: false }) // 与正常收尾协议一致：前端靠 run_end 复位 running
   if (carry.length > 0) setImmediate(() => pump(project))
 }
 

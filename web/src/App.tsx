@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api, ApiError } from "./lib/api"
-import type { ApprovalMode, PendingApproval, PendingRequest, ProviderStatus, RewindSummary, ServerEvent, Snapshot, SubagentItem, ThinkingInfo, TimelineItem } from "./lib/types"
+import type { ApprovalMode, PendingApproval, PendingRequest, ProviderStatus, RewindSummary, RunEvent, ServerEvent, Snapshot, SubagentItem, SubagentStats, SubagentsUpdateEvent, SuspensionCounts, SuspensionEvent, ThinkingInfo, TimelineItem } from "./lib/types"
 import TopBar from "./components/TopBar"
 import Timeline from "./components/Timeline"
 import Composer from "./components/Composer"
@@ -21,7 +21,7 @@ import JobsPage from "./components/JobsPage"
 import McpPage from "./components/McpPage"
 import TMark from "./components/TMark"
 import { getInitialTheme, applyTheme, type Theme } from "./lib/theme"
-import { unlockAudio, playSound } from "./lib/sound"
+import { unlockAudio, playSound, shouldRingDone } from "./lib/sound"
 import { parseSlash } from "./lib/commands"
 
 let uidCounter = 0
@@ -68,8 +68,9 @@ function consumeBoot(boot: string): boolean {
   }
 }
 
-/** 长任务判定：一轮运行达到此时长（毫秒），run_end 时才响完成音 */
-const LONG_TASK_MS = 30_000
+/** 挂起态条目：值存在即该项目处于挂起；counts 可未知——「挂起」这一事实不因缺计数而丢（否则挂起期会显空闲而服务端 409 闸门还在）。
+ *  counts 当前仅随状态落库、无消费方（顶栏不显示挂起计数）：服务端仍在下发，故保留。 */
+type SuspEntry = { counts: SuspensionCounts | null }
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null)
@@ -92,6 +93,8 @@ export default function App() {
   const [tasks, setTasks] = useState<{ title: string; status: string }[]>([])
   // 子代理进度（服务端分流 relay 前缀后广播；右栏「子代理」面板的数据源）
   const [subagents, setSubagents] = useState<SubagentItem[]>([])
+  // 子代理进度统计（已派发/已结束/失败）：广播携 stats、快照携 subagentStats；会话边界由服务端归零后随广播下发
+  const [subagentStats, setSubagentStats] = useState<SubagentStats | null>(null)
   // M2
   const [planMode, setPlanMode] = useState(false)
   const [prefill, setPrefill] = useState<{ text: string } | null>(null)
@@ -114,6 +117,12 @@ export default function App() {
   // 各项目运行状态（跨项目并行：历史面板为所有运行中的项目显示指示器）
   const [busyMap, setBusyMap] = useState<Record<string, boolean>>({})
   const busyMapRef = useRef<Record<string, boolean>>({})
+  // 挂起会话（后台池仍 live：会话仍忙，但当前无用户回合）：suspMap 管全项目——事件期读 ref、
+  // 渲染读 state，当前项目的挂起态与计数由它派生（唯一事实源，不另存一份）
+  const [suspMap, setSuspMap] = useState<Record<string, SuspEntry | null>>({})
+  const suspMapRef = useRef<Record<string, SuspEntry | null>>({})
+  // 各项目当前这一轮是不是「自动消化轮」（run_start 记、run_end 读；事件自带 digest 优先）
+  const digestRef = useRef<Record<string, boolean>>({})
   // 切入正在运行的项目会错过水合点之后的流式增量，记下待补的项目，run_end 后重水合一次
   const pendingHealRef = useRef<string | null>(null)
   // 各项目当前一轮运行的开始时刻（长任务完成音判定用）
@@ -194,14 +203,19 @@ export default function App() {
       const snap = ev as unknown as Snapshot & ServerEvent
       setProjects(snap.projects)
       const bm: Record<string, boolean> = {}
+      const sm: Record<string, SuspEntry | null> = {}
       for (const [dir, st] of Object.entries(snap.active ?? {})) {
         bm[dir] = Boolean(st?.busy)
+        // 挂起态随快照播种：挂起期 busy 已由服务端置真，重连后的显示与 409 闸门保持一致
+        sm[dir] = st?.suspended ? { counts: st.counts ?? null } : null
         // 已在运行的项目（如刷新后重连）：开始时刻未知，记为当前时刻——
         // 只影响长任务判定偏保守（需再跑满 30s 才响），无副作用
         if (st?.busy && !runStartRef.current[dir]) runStartRef.current[dir] = Date.now()
       }
       busyMapRef.current = bm
       setBusyMap(bm)
+      suspMapRef.current = sm
+      setSuspMap(sm)
       const cur = projectRef.current
       if (cur && snap.projects.includes(cur)) {
         const st = snap.active[cur]
@@ -211,6 +225,7 @@ export default function App() {
         setPlanMode(Boolean(st?.planMode))
         if (st?.provider) setProvider(st.provider)
         setSubagents(snap.subagents?.[cur] ?? []) // 子代理面板播种（刷新/重连时恢复）
+        setSubagentStats(snap.subagentStats?.[cur] ?? null) // 进度统计播种（与面板条目同源）
       }
       // 挂起审批/提问按全项目播种（原只播当前项目——后台项目挂起时，切回去也看不到弹窗）
       setPending([
@@ -226,9 +241,27 @@ export default function App() {
     // 运行状态不按项目过滤：后台项目也要维护 busyMap（历史面板指示器依赖它）
     if (ev.type === "run_start" || ev.type === "run_end") {
       const p = String(ev.project ?? "")
-      if (ev.type === "run_start") runStartRef.current[p] = Date.now()
+      const re = ev as unknown as RunEvent
+      if (ev.type === "run_start") {
+        runStartRef.current[p] = Date.now()
+        digestRef.current[p] = Boolean(re.digest)
+      }
+      if (p && ev.type === "run_end") {
+        // 长任务完成音：**不按项目过滤**——提示音的约定是「全局响」（与下方审批 alert 同口径），
+        // 后台项目跑完长回合也该听得见。旧版把这句留在项目过滤之后的 switch 里，于是「后台项目
+        // 跑完也响」只是一句注释、实际永不触发（只有当前项目可达）。消化轮仍静音（D3）。
+        const digest = Boolean(re.digest ?? digestRef.current[p])
+        const startedAt = runStartRef.current[p]
+        delete runStartRef.current[p]
+        if (startedAt && shouldRingDone(Date.now() - startedAt, digest)) playSound("done")
+        // 非当前项目的收尾不会进入下方 switch（那里才删 digestRef）：在这里把它的记录一并清掉
+        if (p !== projectRef.current) delete digestRef.current[p]
+      }
       if (p) {
-        busyMapRef.current = { ...busyMapRef.current, [p]: ev.type === "run_start" }
+        // 挂起期的收尾不得把该项目显成空闲：会话仍忙（会话操作仍被 409 拦住）；
+        // 只有挂起退出（suspension active:false）才落回非忙
+        const busy = ev.type === "run_start" || Boolean(suspMapRef.current[p])
+        busyMapRef.current = { ...busyMapRef.current, [p]: busy }
         setBusyMap(busyMapRef.current)
       }
     }
@@ -269,6 +302,23 @@ export default function App() {
     if (ev.type === "decision" || ev.type === "answered") {
       // 不按项目过滤：审批/提问全局入列后，裁定事件同样要全局出列
       setPending((p) => p.filter((x) => x.reqId !== ev.reqId))
+      return
+    }
+    // 挂起会话（后台池仍 live）不按项目过滤：挂起态要同步进全项目 busyMap（历史面板指示器），
+    // 否则挂起期该项目显成空闲，而服务端会话操作闸门（409）还在——显示与闸门必须一致
+    if (ev.type === "suspension") {
+      const se = ev as unknown as SuspensionEvent
+      const dir = String(ev.project ?? "")
+      if (dir) {
+        const rec: SuspEntry | null = se.active ? { counts: se.counts ?? null } : null
+        suspMapRef.current = { ...suspMapRef.current, [dir]: rec }
+        setSuspMap(suspMapRef.current)
+        busyMapRef.current = { ...busyMapRef.current, [dir]: Boolean(rec) }
+        setBusyMap(busyMapRef.current)
+        // 挂起中 = 会话忙：当前项目的 running 跟着翻转（退出事件晚于最后一轮 run_end，
+        // 否则挂起期会显空闲而会话操作已被 409 拦住）
+        if (dir === projectRef.current) setRunning(Boolean(rec))
+      }
       return
     }
     if (ev.project && ev.project !== projectRef.current) return
@@ -352,10 +402,13 @@ export default function App() {
       case "task_update":
         setTasks(((ev.items as { title: string; status: string }[]) ?? []).map((t) => ({ title: t.title, status: t.status })))
         break
-      case "subagents_update":
+      case "subagents_update": {
         // 只吃当前项目（上方 project 过滤已挡住其它项目；服务端每次下发全量 items）
-        setSubagents((ev.items as SubagentItem[]) ?? [])
+        const su = ev as unknown as SubagentsUpdateEvent
+        setSubagents(su.items ?? [])
+        setSubagentStats(su.stats ?? null)
         break
+      }
       case "usage": {
         const u = (ev.usage as Record<string, number>) ?? {}
         runUsageRef.current.prompt += u.prompt_tokens ?? 0
@@ -381,38 +434,42 @@ export default function App() {
         clearSuggests()
         break
       case "run_end": {
-        // 长任务完成音：这一轮跑满 30s 才响（短问答不吵）；后台项目跑完也响
-        const startedAt = runStartRef.current[String(ev.project ?? "")]
-        delete runStartRef.current[String(ev.project ?? "")]
-        if (startedAt && Date.now() - startedAt >= LONG_TASK_MS) playSound("done")
+        const endDir = String(ev.project ?? "")
+        // 自动消化轮：后台报告收尾后内核自开的一轮，用户没在等它——不生成追问建议
+        // （完成音判定不在此处：那句不按项目过滤，见上方运行态侧效块）
+        const re = ev as unknown as RunEvent
+        const digest = Boolean(re.digest ?? digestRef.current[endDir])
+        delete digestRef.current[endDir]
         setRunning(false)
         setQueued(Number(ev.queued ?? 0))
         closeStream() // 本轮正文定稿（收尾事件正常已闭合；此处兜底同一语义）
-        // 一轮收尾：落一条总结（完成时间 + 该轮 token 消耗）
+        // 一轮收尾：落一条总结（完成时间 + 该轮 token 消耗）；digest 轮在时间线上标「自动消化」
         pushItem({
           kind: "runEnd",
           id: uid(),
           ts: Number(ev.ts ?? Date.now()),
           prompt: runUsageRef.current.prompt,
           completion: runUsageRef.current.completion,
+          digest,
         })
         runUsageRef.current = { prompt: 0, completion: 0 }
         // 这一轮开始前打了回退点，结束后同步一下，让刚发出那条消息的回退按钮可用；
         // 若是切入运行中项目后收的尾，先重水合补齐错过的增量，再对回退点
-        if (ev.project === projectRef.current) {
-          if (pendingHealRef.current === ev.project) {
+        if (endDir === projectRef.current) {
+          if (pendingHealRef.current === endDir) {
             pendingHealRef.current = null
-            hydrateHistory(ev.project as string, () => syncRewindIds(ev.project as string))
+            hydrateHistory(endDir, () => syncRewindIds(endDir))
           } else {
-            void syncRewindIds(ev.project as string)
+            void syncRewindIds(endDir)
           }
         }
         // 追问建议只在「正常收尾」时生成：异常收尾（停止/暂停/报错）上下文不完整；
-        // 本轮弹了方案卡也不生成（方案卡自带「批准/调整」，再叠一层 chips 是噪声）
+        // 本轮弹了方案卡也不生成（方案卡自带「批准/调整」，再叠一层 chips 是噪声）；
+        // 自动消化轮也不生成（用户没提问，无从追问）；
+        // 收尾后即将进挂起会话的也不生成（会话忙、那条旁路注定空返——服务端 run_end 带 suspending）
         const clean = !turnBadRef.current && !planPresentedRef.current
         planPresentedRef.current = false
-        const endDir = String(ev.project ?? "")
-        if (clean && endDir && endDir === projectRef.current) loadSuggests(endDir)
+        if (clean && !digest && !re.suspending && endDir && endDir === projectRef.current) loadSuggests(endDir)
         break
       }
       case "done":
@@ -587,6 +644,7 @@ export default function App() {
     // pending 不清：审批/提问弹窗是全局的（跨项目可见），切项目后仍在等待的项目弹窗要保留
     setTasks([])
     setSubagents([]) // 切项目：上一个项目的子代理进度不带过去（等着本项目的广播/快照）
+    setSubagentStats(null) // 进度统计同口径重置
     setUsage({ prompt: 0, completion: 0 })
     setProvider(null)
     setPlanMode(false)
@@ -714,6 +772,7 @@ export default function App() {
           setPending([])
           setTasks([])
           setSubagents([])
+          setSubagentStats(null)
           setUsage({ prompt: 0, completion: 0 })
           setProvider(null)
           setPlanMode(false)
@@ -887,6 +946,14 @@ export default function App() {
     return typeof p === "string" && isPreviewable(p.trim()) ? [p.trim()] : []
   })
 
+  // 挂起态（当前项目）：从 suspMap 派生，切到挂起中的项目立刻成品（无需等事件/快照）
+  const suspEntry = (project ? suspMap[project] : null) ?? null
+  const suspended = Boolean(suspEntry)
+  // 占用（当前项目）= 有用户在跑的回合 ∨ 挂起会话中：挂起期服务端 busy 恒为真（会话切换/回退
+  // 一律 409），显示侧必须同口径——两轮消化之间 running 会被 run_end 复位，只用 running 判会
+  // 出现「界面说没锁、点了却 409」的不一致
+  const occupied = running || suspended
+
   return (
     <div className="flex h-full overflow-x-hidden">
       <NavRail
@@ -895,7 +962,7 @@ export default function App() {
           setView(v)
           if (v === "jobs") setJobNotice(0)
         }}
-        busy={running}
+        busy={occupied}
         jobNotice={jobNotice}
         theme={theme}
         onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
@@ -905,7 +972,7 @@ export default function App() {
         <HistoryPanel
           projects={projects}
           project={project}
-          running={running}
+          running={occupied}
           busyMap={busyMap}
           refreshTick={sessionsTick}
           onClose={() => setShowHistory(false)}
@@ -953,6 +1020,7 @@ export default function App() {
               mode={mode}
               onMode={changeMode}
               running={running}
+              suspended={suspended}
               queued={queued}
               usage={usage}
               tasks={tasks}
@@ -967,6 +1035,7 @@ export default function App() {
                 }
               }}
               subagents={subagents}
+              subagentStats={subagentStats}
               showSubagents={rightTab === "subagents" && showDocs}
               onToggleSubagents={() => {
                 if (rightTab === "subagents" && showDocs) setShowDocs(false)
@@ -1030,6 +1099,7 @@ export default function App() {
                   disabled={!project || (provider ? !provider.configured : false)}
                   disabledReason={!project ? "请先选择项目" : provider && !provider.configured ? "尚未配置模型 API key（见上方配置面板）" : undefined}
                   running={running}
+                  suspended={suspended}
                   queued={queued}
                   onSubmit={send}
                   onAbort={stop}
@@ -1042,7 +1112,7 @@ export default function App() {
                 (rightTab === "tasks" ? (
                   <TaskPanel tasks={tasks} onClose={() => setShowDocs(false)} />
                 ) : rightTab === "subagents" ? (
-                  <SubagentPanel items={subagents} onClose={() => setShowDocs(false)} />
+                  <SubagentPanel items={subagents} stats={subagentStats} onClose={() => setShowDocs(false)} />
                 ) : (
                   <DocPanel project={project} files={touchedFiles} onClose={() => setShowDocs(false)} />
                 ))}

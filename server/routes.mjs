@@ -188,6 +188,11 @@ async function handleApi(req, res, url) {
       return json(res, 200, { projects })
     }
 
+    // 「位置」枚举（盘符 / 挂载卷 / 根）：win32 上 C:\ 与 D:\ 是互不相邻的独立树——dirname 到盘根
+    // 返回自身（实测 win32 dirname("C:\\") === "C:\\"），「上一级」走到 C:\ 即到顶；界面上没有
+    // 枚举入口，别的盘就永远不可达（不是路径处理错，是导航入口缺失）
+    if (p === "/api/fs/roots" && method === "GET") return json(res, 200, { roots: listFsRoots() })
+
     // ---- 目录浏览（添加项目选目录 / 输入框插文件路径；files=1 时同时返回文件条目） ----
     if (p === "/api/fs" && method === "GET") {
       const dir = normalizePath(url.searchParams.get("dir") || homedir())
@@ -956,6 +961,38 @@ function statSyncIsDir(dir) {
   } catch {
     return false
   }
+}
+
+/** 目录浏览弹窗的「位置」条目：主目录 + 根/盘符。
+ *  win32 —— A–Z 探测真实存在的盘符（不存在的盘 statSync 直接 ENOENT，无阻塞）；
+ *  darwin —— `/` + `/Volumes` 下的挂载卷；其他 POSIX —— `/`（POSIX 单根树，从 / 可达全盘）。 */
+function listFsRoots() {
+  const roots = []
+  const seen = new Set()
+  // 统一收口：归一 → 存在 → 是目录，任一不过就丢弃（列表里不留点进去就报错的假条目）；重复 path 去重
+  const push = (name, path, kind) => {
+    const abs = normalizePath(path)
+    if (!abs || seen.has(abs) || !existsSync(abs) || !statSyncIsDir(abs)) return
+    seen.add(abs)
+    roots.push({ name, path: abs, kind })
+  }
+  push("主目录", homedir(), "home")
+  if (process.platform === "win32") {
+    for (let c = 65; c <= 90; c++) {
+      const drive = String.fromCharCode(c) + ":"
+      push(drive, drive + "\\", "drive")
+    }
+  } else {
+    push("/", "/", "root")
+    if (process.platform === "darwin") {
+      try {
+        for (const vol of readdirSync("/Volumes")) push(vol, `/Volumes/${vol}`, "volume")
+      } catch {
+        // /Volumes 不可读时只保留根（枚举失败不该让整个接口失败）
+      }
+    }
+  }
+  return roots
 }
 
 // ================= 入口 =================

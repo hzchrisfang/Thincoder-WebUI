@@ -57,6 +57,8 @@ export const api = {
       `/api/fs${q ? `?${q}` : ""}`
     )
   },
+  /** 可切换的位置（盘符 / 挂载卷 / 根）：目录浏览弹窗的「位置」菜单数据源 */
+  fsRoots: () => request<{ roots: { name: string; path: string; kind: string }[] }>("/api/fs/roots"),
   open: (project: string) =>
     request<{ provider: ProviderStatus }>("/api/open", { method: "POST", body: JSON.stringify({ project }) }),
   chat: (project: string, text: string) =>

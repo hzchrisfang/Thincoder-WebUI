@@ -7,6 +7,8 @@ interface Props {
   disabled: boolean
   disabledReason?: string
   running: boolean
+  /** 挂起会话中（后台池仍 live）：停止键让位给发送键——挂起期输入开放且优先执行（D1） */
+  suspended: boolean
   queued: number
   onSubmit: (text: string) => void
   onAbort: () => void
@@ -16,7 +18,7 @@ interface Props {
 }
 
 /** 输入区：Claude 风格 —— 圆润浮起输入框 + 珊瑚色发送键；键入 / 弹出斜线命令菜单 */
-export default function Composer({ disabled, disabledReason, running, queued, onSubmit, onAbort, prefill, onPrefillTaken }: Props) {
+export default function Composer({ disabled, disabledReason, running, suspended, queued, onSubmit, onAbort, prefill, onPrefillTaken }: Props) {
   const [text, setText] = useState("")
   const [menuOpen, setMenuOpen] = useState(true)
   const [sel, setSel] = useState(0)
@@ -205,7 +207,7 @@ export default function Composer({ disabled, disabledReason, running, queued, on
             className="no-focus-ring max-h-[220px] min-h-[40px] w-full resize-none bg-transparent px-2.5 py-2 text-sm leading-relaxed text-t1 outline-none placeholder:text-t4 disabled:cursor-not-allowed"
           />
 
-          {running ? (
+          {running && !suspended ? (
             <button
               onClick={onAbort}
               className="flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-red-950 px-4 text-sm font-medium text-red-300 transition-colors hover:bg-red-900"

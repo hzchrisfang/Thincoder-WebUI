@@ -16,8 +16,8 @@ export type TimelineItem =
   | { kind: "assistant"; id: string; text: string; reasoning: string; done: boolean }
   | { kind: "tool"; id: string; tool: ToolCardData }
   | { kind: "plan"; id: string; plan: string }
-  /** 一轮运行收尾：完成时间 + 该轮 token 消耗（实时流由 run_end 产出；历史重建从用量库按时间窗聚合） */
-  | { kind: "runEnd"; id: string; ts: number; prompt: number; completion: number }
+  /** 一轮运行收尾：完成时间 + 该轮 token 消耗（实时流由 run_end 产出；历史重建从用量库按时间窗聚合）；digest=true 是自动消化轮 */
+  | { kind: "runEnd"; id: string; ts: number; prompt: number; completion: number; digest?: boolean }
   | {
       kind: "notice"
       id: string
@@ -95,8 +95,20 @@ export interface SubagentItem {
   waitingApproval: boolean
   report?: string | null
   reportTruncated?: boolean
+  /** 报告已收尾、等内核消化轮读进会话（D4 的「待消化」标记；不被误降级成 ended） */
+  pending?: boolean
   /** 最后一次变更时刻（终态行的 elapsed 冻结用） */
   updatedAt?: number
+}
+
+/** 子代理进度统计（会话口径）：服务端 subagents_update.stats 与 snapshot.subagentStats 同源 */
+export interface SubagentStats {
+  /** 本会话派发总数——**单调计数**，不随终态行自裁（登记表 TERMINAL_LIMIT=20）封顶 */
+  dispatched: number
+  /** 已结束行数（done/stopped/error/ended：该行不再活跃，与面板 TERMINAL 集合同口径） */
+  finished: number
+  /** 其中以 error 收尾的行数 */
+  failed: number
 }
 
 export interface ProjectState {
@@ -105,6 +117,10 @@ export interface ProjectState {
   mode: ApprovalMode
   planMode?: boolean
   provider: ProviderStatus | null
+  /** 挂起会话中（后台池仍 live：会话仍忙、不含用户回合）；挂起期 busy 必为 true */
+  suspended?: boolean
+  /** 后台池计数（服务端仍随挂起事件/快照下发）；服务端无计数时发 null */
+  counts?: SuspensionCounts | null
 }
 
 export interface SessionSlotInfo {
@@ -125,6 +141,8 @@ export interface Snapshot {
   active: Record<string, ProjectState>
   /** 各项目子代理登记表（项目目录 → 条目列表） */
   subagents?: Record<string, SubagentItem[]>
+  /** 各项目子代理进度统计（与 subagents 平级；会话边界随登记表一起归零） */
+  subagentStats?: Record<string, SubagentStats>
   pendingApprovals: { reqId: string; project: string; name: string; args: Record<string, unknown>; diff?: DiffInfo | null }[]
   pendingQuestions: { reqId: string; project: string; question: string; options: string[] }[]
 }
@@ -134,6 +152,37 @@ export interface ServerEvent {
   project?: string
   ts: number
   [key: string]: unknown
+}
+
+/** 子代理进度广播：当前项目全量 items + 进度统计（缺 stats 时面板/按钮不显示数字） */
+export interface SubagentsUpdateEvent extends ServerEvent {
+  type: "subagents_update"
+  items?: SubagentItem[]
+  stats?: SubagentStats
+}
+
+/** 后台池计数（挂起驱动的状态面）：运行中 / 排队 / 待消化 / 已完成 */
+export interface SuspensionCounts {
+  running: number
+  queued: number
+  pending: number
+  done: number
+}
+
+/** 挂起会话状态事件：进入 / 计数变化 / 退出各下发一次 */
+export interface SuspensionEvent extends ServerEvent {
+  type: "suspension"
+  active: boolean
+  counts: SuspensionCounts | null
+}
+
+/** 回合起止事件；digest=true 标示自动消化轮（后台报告收尾后内核自开的一轮，非用户发起）；
+ *  suspending=true 标示「本回合收尾后即将进入挂起会话」（前端据此跳过追问建议旁路） */
+export interface RunEvent extends ServerEvent {
+  type: "run_start" | "run_end"
+  digest?: boolean
+  suspending?: boolean
+  queued?: number
 }
 
 export interface Preset {

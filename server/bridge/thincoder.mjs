@@ -59,7 +59,7 @@ export async function loadThincoder() {
   if (tc) return tc
   const dir = resolveCoreDir()
   const url = (f) => pathToFileURL(join(dir, f)).href
-  const [agent, config, configIo, memory, tools, session, sessionLifecycle, sessionSlots, checkpoint, embedding, mcp, provider, gitmem, rules, proxy, editDiff, shared, relayPrefix] = await Promise.all([
+  const [agent, config, configIo, memory, tools, session, sessionLifecycle, sessionSlots, checkpoint, embedding, mcp, provider, gitmem, rules, proxy, editDiff, shared, relayPrefix, suspCore, asyncDiscard, subagentAsync, consultCore, asyncSettle, parentChannel] = await Promise.all([
     import(url("agent.mjs")),
     import(url("config.mjs")),
     import(url("config-io.mjs")),
@@ -82,6 +82,15 @@ export async function loadThincoder() {
     // 可选导入（.catch → null）：旧内核无此模块时只应丢「子代理面板」这一扩展面，
     // 绝不让 loadThincoder 整条 reject（那会连聊天/会话/回退一起瘫）
     import(url("agent/relay-prefix.mjs")).catch(() => null),
+    // 挂起会话驱动（suspension drive）内核面：判据/清场/注入全部取核单点，WebUI 零重实现。
+    // 可选导入（.catch → null，同 relay-prefix 先例）：旧内核缺任一模块 ⇒ 挂起面整体为 null ⇒
+    // runner 退回今天的 headless 档（不传 suspDriven、不进挂起会话），其余功能照旧。
+    import(url("agent/suspension.mjs")).catch(() => null),
+    import(url("agent-tools/async-discard.mjs")).catch(() => null),
+    import(url("agent-tools/subagent-async.mjs")).catch(() => null),
+    import(url("agent-tools/consult.mjs")).catch(() => null),
+    import(url("agent-tools/async-settle.mjs")).catch(() => null),
+    import(url("agent-tools/parent-channel.mjs")).catch(() => null),
   ])
 
   // saveConfig 兼容层：旧语义（cfg 整对象覆盖落盘）→ 新 writeConfigAtomic（新鲜读 + mtime 门控）。
@@ -171,6 +180,29 @@ export async function loadThincoder() {
     listSlots,
   }
 
+  // 挂起会话驱动内核面（唯一适配面；bridge/suspension.mjs 与 runner 只经此表取核函数）。
+  // fail-closed：模块集缺一即整面为 null——半套装配会让「settled 只留池」而无人消化（结果丢
+  // 在池里），宁可退回 headless 档也不开口。
+  const suspension = (suspCore?.poolLive && suspCore?.sweepSettledToPending && suspCore?.backgroundCounts
+    && asyncDiscard?.discardAbortedPool && asyncDiscard?.discardAbortedAdvisors
+    && subagentAsync?.injectAsyncResult
+    && consultCore?.injectConsultResult && consultCore?.cleanupConsultSessions
+    && asyncSettle?.releaseSettledEntry
+    && parentChannel?.upstreamWaiting)
+    ? {
+        poolLive: suspCore.poolLive,
+        sweepSettledToPending: suspCore.sweepSettledToPending,
+        backgroundCounts: suspCore.backgroundCounts,
+        discardAbortedPool: asyncDiscard.discardAbortedPool,
+        discardAbortedAdvisors: asyncDiscard.discardAbortedAdvisors,
+        injectAsyncResult: subagentAsync.injectAsyncResult,
+        injectConsultResult: consultCore.injectConsultResult,
+        cleanupConsultSessions: consultCore.cleanupConsultSessions,
+        releaseSettledEntry: asyncSettle.releaseSettledEntry,
+        upstreamWaiting: parentChannel.upstreamWaiting,
+      }
+    : null
+
   const version = thincoderVersion()
   // 审批 diff 引擎注入缝：edit 预览复用内核 computeEditEntry（三形态共用判定/应用内核），
   // 预览语义 = 执行语义。注入失败（旧内核）→ diff 引擎保持内置保守预览，功能不降级。
@@ -189,6 +221,8 @@ export async function loadThincoder() {
     // （bridge/subagents.mjs）的唯一解析源，不经此表就在 WebUI 侧自持第二套正则必漂移。
     // 模块缺失（旧内核）→ null：subagents.useRelay 会忽略，面板静默不启用，其余功能照旧
     relay: relayPrefix ? { parseRelayPath: relayPrefix.parseRelayPath, RELAY_PREFIX_RE: relayPrefix.RELAY_PREFIX_RE } : null,
+    // 挂起会话驱动面（见上）：null = 旧内核不支持，runner 退回 headless 档
+    suspension,
     // 薄壳 tui 目录按安装形态探测：本地平级（node_modules/thincoder）与全局内嵌
     // （thincoder/node_modules/@thincoder/core）两种布局都覆盖。斜线命令表与
     // 思考程度设置（thinkingSet 复用内核 cmd-think.mjs 的 applyThink）共用此探测。

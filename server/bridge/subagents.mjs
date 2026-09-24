@@ -53,6 +53,35 @@ const TERMINAL_LIMIT = 20
 /** 终态集合（finish / routeSyncComplete / attachReport / reconcilePool 的落点） */
 const TERMINAL = new Set(["done", "stopped", "error", "ended"])
 
+// ── 会话级进度统计（0.9.0）：分母必须是**单调计数**——终态行按 TERMINAL_LIMIT 自裁，行数会封顶失真，
+//    拿行数当分母会把「已派发」永远卡在 20。`finished` 与面板 TERMINAL 集合同口径（done/stopped/
+//    error/ended = 该行不再活跃），故由「已派发 − 仍活跃行 − 被移除的占位行」派生：与面板所见
+//    一致，且不怕裁剪。会话边界（clear）随登记表一起归零。
+const stats = new Map() // project -> { dispatched, removed, failed }
+function statsFor(project, create = false) {
+  let s = stats.get(project)
+  if (!s && create) { s = { dispatched: 0, removed: 0, failed: 0 }; stats.set(project, s) }
+  return s
+}
+/** 建行单点：登记表写入 + 派发计数（ensure / ensureRow 共用——「派发」= 首次出现一个新子代理） */
+function createRow(project, key) {
+  const e = newEntry(key)
+  tableFor(project, true).set(key, e)
+  statsFor(project, true).dispatched++
+  return e
+}
+/** 进度统计（广播 / 快照用）：{ dispatched, finished, failed } */
+export function statsOf(project) {
+  const s = statsFor(project) ?? { dispatched: 0, removed: 0, failed: 0 }
+  const rows = [...(tables.get(project)?.values() ?? [])]
+  const active = rows.filter((e) => !TERMINAL.has(e.status)).length
+  return {
+    dispatched: s.dispatched,
+    finished: Math.max(0, s.dispatched - active - s.removed),
+    failed: s.failed,
+  }
+}
+
 /** 文件变更类工具（基名）——args.path 收进 files（对齐 runner.mjs 的 AUTO_EDIT_AUTO 家族） */
 const FILE_TOOLS = new Set(["write", "edit", "delete", "hashline_edit", "multi_edit", "apply_patch"])
 
@@ -116,6 +145,9 @@ function newEntry(key, status = "running") {
     waitingApproval: false,
     report: null,
     reportTruncated: false,
+    // 待消化（挂起会话期）：已 settle 但报告尚未进会话（= 条目驻 pending 容器）——挂起驱动的
+    // reconcilePool 按此标记，前端显「待消化」；报告挂行 / 消化完成即清掉
+    pending: false,
     updatedAt: now,
     _started: false, // ⟦ev⟧async 置位：排队块与已启动块的判别（cancelled 守卫用）
   }
@@ -145,8 +177,7 @@ function ensure(project, head) {
   const t = tableFor(project, true)
   let e = t.get(head)
   if (!e) {
-    e = newEntry(head)
-    t.set(head, e)
+    e = createRow(project, head)
     flush(project) // 新建 = 跃迁：立即广播
     return e
   }
@@ -163,10 +194,7 @@ function ensure(project, head) {
 function ensureRow(project, key) {
   const t = tableFor(project, true)
   let e = t.get(key)
-  if (!e) {
-    e = newEntry(key)
-    t.set(key, e)
-  }
+  if (!e) e = createRow(project, key)
   return e
 }
 
@@ -190,6 +218,7 @@ function toItem(e) {
     waitingApproval: e.waitingApproval,
     report: e.report,
     reportTruncated: e.reportTruncated,
+    pending: e.pending === true,
     updatedAt: e.updatedAt,
   }
 }
@@ -217,7 +246,7 @@ function flush(project) {
 
 function emitNow(project) {
   try {
-    bus.emit({ type: "subagents_update", project, items: list(project) })
+    bus.emit({ type: "subagents_update", project, items: list(project), stats: statsOf(project) })
   } catch { /* 广播失败不阻塞运行 */ }
 }
 
@@ -245,10 +274,18 @@ export function snapshotAll() {
   return out
 }
 
+/** 全项目进度统计（runner.snapshot() 的 `subagentStats` 字段；形状与 emitNow 的 stats 同源） */
+export function snapshotStatsAll() {
+  const out = {}
+  for (const project of tables.keys()) out[project] = statsOf(project)
+  return out
+}
+
 /** 清空某项目登记表 + 墓碑 + 待发广播，并发一次空 items 的 update */
 export function clear(project) {
   const had = tables.delete(project)
   tombstones.delete(project)
+  stats.delete(project) // 会话边界：进度统计随登记表一起归零（「本会话已派发」）
   const timer = timers.get(project)
   if (timer) {
     clearTimeout(timer)
@@ -366,7 +403,10 @@ function finish(project, entry, status) {
 
 function removeKey(project, key) {
   const t = tables.get(project)
+  const e = t?.get(key)
   if (!t?.delete(key)) return
+  // 占位行被移除（从未启动的 queued 行）：它没到终局，不得被算进「已结束」——单独记账扣除
+  if (e && !TERMINAL.has(e.status)) { const s = statsFor(project, true); if (s) s.removed++ }
   tombstone(project, key) // 移除与墓碑同一守卫（CLI c2：后续迟到 token 不重建幻影条目）
   flush(project)
 }
@@ -509,6 +549,11 @@ function attachReport(project, { id, role, status, body }) {
   entry.report = report
   entry.reportTruncated = truncated
   entry.status = status // 报告是权威终态：finished→done / error→error
+  if (status === "error" && entry._errCounted !== true) {
+    entry._errCounted = true // 同一行只记一次（重挂报告不重复计数）
+    const s = statsFor(project, true); if (s) s.failed++
+  }
+  entry.pending = false // 报告已进会话（同步自 history）= 消化完成：待消化标记退场
   entry.currentTool = null
   entry.waitingApproval = false
   entry.queueKind = null
@@ -552,10 +597,26 @@ export function reconcilePool(project, agent) {
         live.set(String(k), v) // 表 key 与池 key 同形的兜底
       }
     }
+    // 待消化条目（挂起会话）：已 settle 的条目在挂起期被移交 pending 单容器（内核 settle 分流
+    // / 挂起 sweep），**已出池**——“不在池”对它们不是「本轮结束未见完成事件」，而是「报告在
+    // 路上，消化轮随后注入」。键形与报告挂行同源（`${role}#${id}`——attachReport 同式）。
+    const pendingKeys = new Set()
+    for (const e of agent?._pendingAsyncResults ?? []) {
+      if (!e || typeof e !== "object") continue
+      const role = typeof e.role === "string" && e.role ? e.role : null
+      const id = e.id != null ? String(e.id) : null
+      if (role && id) pendingKeys.add(`${role}#${id}`)
+    }
     let changed = false
     const now = Date.now()
     for (const entry of t.values()) {
       const hit = live.get(entry.key)
+      // 「待消化」标记严格镜像 pending 容器（消化轮在 run 首行消费它——下一次 reconcile 即清掉）
+      const pendingRow = pendingKeys.has(entry.key)
+      if (entry.pending !== pendingRow) {
+        entry.pending = pendingRow
+        changed = true
+      }
       if (hit) {
         const status = hit.status === "queued" ? "queued" : "running"
         if (entry.status !== status) {
@@ -587,6 +648,10 @@ export function reconcilePool(project, agent) {
         }
         if (status === "running" && entry._started !== true) entry._started = true
         if (changed) entry.updatedAt = now
+      } else if (pendingRow) {
+        // 待消化：报告在路上（挂起驱动的消化轮随后注入）——**不得**降级 ended（旧行为把它当
+        // 「本轮结束未见完成事件」，在挂起会话里会误报「已结束」并让面板行失去报告归属）
+        entry.updatedAt = now
       } else if (entry.status === "running" || entry.status === "queued") {
         entry.status = "ended"
         entry.waitingApproval = false
