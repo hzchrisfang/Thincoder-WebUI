@@ -446,6 +446,14 @@ async function handleApi(req, res, url) {
       if (providers.length === (rawConfig.providers ?? []).length) return json(res, 404, { error: "供应商不存在" })
       // 「删除的是当前默认渠道」判据 = defaultModel 指向它（activeProvider 已废——内核 loadConfig 读盘即删该字段）
       const removedActive = activeProviderName(t, rawConfig.defaultModel, rawConfig.providers) === name
+      // 子代理模型级联：三类引用中**指向被删渠道**的，本次一并清成「跟随主线」——
+      // 否则删渠道后子任务/评审仍指向不存在的渠道，派发即失败（悬挂引用）。
+      // 判据用 `name + ":"` 前缀（⟺ 首冒号分割后 provider 段 === name，且天然排除 `nameX:` 与裸值）；
+      // 事后统一走 writeSubagentModelPatch 清除（三态语义 + 磁盘原子补丁 + 池内热同步，不另写一套）
+      const refs = subagentModelsOf(t, rawConfig)
+      const reverts = ["explore", "coder", "advisor"].filter(
+        (k) => typeof refs[k] === "string" && refs[k].startsWith(`${name}:`)
+      )
       rawConfig.providers = providers
       if (removedActive) {
         const next = providers[0]
@@ -468,7 +476,10 @@ async function handleApi(req, res, url) {
           }
         }
       }
-      return json(res, 200, { ok: true, activeProvider: fallbackName })
+      if (reverts.length) {
+        await writeSubagentModelPatch(t, { values: Object.fromEntries(reverts.map((k) => [k, null])) })
+      }
+      return json(res, 200, { ok: true, activeProvider: fallbackName, reverted: reverts })
     }
     if (p === "/api/config/active" && method === "POST") {
       const body = await readBody(req)
@@ -503,21 +514,33 @@ async function handleApi(req, res, url) {
     if (p === "/api/config/test" && method === "POST") {
       const body = await readBody(req)
       const t = await loadThincoder()
-      let spec = { baseURL: body.baseURL, apiKey: body.apiKey, model: body.model }
+      // 供应商存在性 + model 取值：本端点对外形状一字不改（找不到供应商仍 404；缺 model 仍 400）
+      let model = body.model
       if (body.name) {
         const cfg = t.config.loadConfig()
         const found = (cfg.providersList ?? []).find((x) => x.name === body.name)
         if (!found) return json(res, 404, { error: "供应商不存在" })
-        spec = { baseURL: found.baseURL, apiKey: body.apiKey || found.apiKey, model: found.model }
+        model = found.model
       }
-      if (!spec.baseURL || !spec.apiKey || !spec.model) return json(res, 400, { error: "缺少 baseURL/apiKey/model" })
-      try {
-        const provider = t.provider.createProvider(spec)
-        const models = await t.provider.listModels(provider, { signal: AbortSignal.timeout(8000) })
-        return json(res, 200, { ok: true, models })
-      } catch (err) {
-        return json(res, 200, { ok: false, error: err?.message ?? String(err) })
-      }
+      // model 必填是本端点与 /api/config/models 的唯一分工差异（连接测试是给某个具体模型做的）——
+      // 先判再探针：缺 model 时绝不先发一次网络请求
+      if (!model) return json(res, 400, { error: "缺少 baseURL/apiKey/model" })
+      const r = await probeModels(t, body.name ? { name: body.name, apiKey: body.apiKey, model } : { baseURL: body.baseURL, apiKey: body.apiKey, model })
+      // baseURL/apiKey 的解析与失败语义全部复用探针（同一实现）；400 文案映射回本端点历史契约的三项并列措辞
+      if (r.status === 400) return json(res, 400, { error: "缺少 baseURL/apiKey/model" })
+      return json(res, r.status, r.body)
+    }
+    // ---- 模型清单探针（GET /models）----
+    // 与 /api/config/test 的分工：清单探针**不需要 model**——新增渠道在保存前即可拉清单，
+    // 用于「有清单就选项、没清单才文本」；test 则是对某个具体模型的连通性验证（model 必填）。
+    if (p === "/api/config/models" && method === "POST") {
+      const body = await readBody(req)
+      const t = await loadThincoder()
+      // name 优先（已保存渠道——baseURL/format/headers 用存量，apiKey 传入则覆盖存量）；
+      // 否则用传入的 baseURL/apiKey（format 可选——前端当前不传，缺省不传即走 openai 形状）
+      const name = body.name ? String(body.name) : ""
+      const r = await probeModels(t, { name, baseURL: body.baseURL, apiKey: body.apiKey, format: body.format })
+      return json(res, r.status, r.body)
     }
     if (p === "/api/config/embedding" && method === "PUT") {
       const body = await readBody(req)
@@ -919,6 +942,63 @@ function maskProvider(pv) {
 function activeProviderName(t, defaultModel, providers) {
   const r = t.config.parseModelRef(defaultModel, providers ?? [])
   return r.ok ? r.provider.name : null
+}
+
+/** GET /models 探针专用的占位 model —— 仅为满足内核 createProvider 的必填校验（core.mjs:45 无 model 硬抛
+ *  "model is required"）。listModels 全程不读 provider.model（list-models.mjs:96-105 只用
+ *  baseURL/apiKey/format/headers/proxyUri），故占位值不进任何请求形状、也不会落盘。 */
+const LIST_PROBE_MODEL = "__models_probe__"
+
+/** 清单拉取失败的**人话短句**（界面只显示这个）——上游原始报文只留在 `body.error` 里（API 消费方 / 排查用），
+ *  **绝不上界面**：整段 `GET /models failed 401: {"error":…}` 对用户是纯噪声。
+ *  分类依据 = 内核 `list-models.mjs` 的实际抛出形态：带 status 的 `…failed <code>: …`（:35 附 `e.status`）、
+ *  超时（`AbortSignal.timeout` 的 TimeoutError）、非 JSON（`failed: non-JSON response`）、网络层（fetch failed）。 */
+function modelsProbeReason(err, message) {
+  const status = Number.isInteger(err?.status) ? err.status : null
+  const msg = String(message ?? "")
+  if (status === 401 || status === 403) return "无法拉取清单，API key 未识别"
+  if (status === 404) return "无法拉取清单，渠道地址不对"
+  if (status >= 500) return "无法拉取清单，渠道服务异常"
+  if (status) return "无法拉取清单，请求被渠道驳回"
+  if (err?.name === "TimeoutError" || err?.name === "AbortError" || /timeout/i.test(msg)) return "无法拉取清单，连接超时"
+  if (/non-JSON/i.test(msg)) return "无法拉取清单，渠道返回的不是模型清单"
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|socket|network/i.test(msg)) return "无法拉取清单，网络不通"
+  return "无法拉取清单"
+}
+
+/** 模型清单探针（GET /models；8s 超时）——「有清单就选项、没清单才文本」的清单来源。
+ *  两种入参：
+ *   - 已保存渠道 { name, apiKey?, model? }：baseURL/format/headers 取存量（listModels 按 format 分派
+ *     anthropic/google，并 spread provider.headers），apiKey 传入则覆盖存量；
+ *   - 未保存渠道 { baseURL, apiKey, format?, model? }：直接用。
+ *  与 /api/config/test 的分工：清单探针**不需要 model**（新增渠道在保存前即可拉清单）；
+ *  model 只在调用方给出（或存量有）时透传给 createProvider，否则用 LIST_PROBE_MODEL 占位。
+ *  失败不抛出（与既有 test 端点同语义）：{ status: 200, body: { ok: false, error } }。
+ *  返回 { status, body }，调用方直接 json(res, r.status, r.body)。 */
+async function probeModels(t, { name, baseURL, apiKey, model, format }) {
+  let spec = { baseURL, apiKey, format, model }
+  if (name) {
+    const cfg = t.config.loadConfig()
+    const found = (cfg.providersList ?? []).find((x) => x.name === name)
+    if (!found) return { status: 404, body: { error: "供应商不存在" } }
+    spec = {
+      baseURL: found.baseURL,
+      apiKey: apiKey || found.apiKey,
+      format: found.format,
+      headers: found.headers,
+      model: model || found.model,
+    }
+  }
+  if (!spec.baseURL || !spec.apiKey) return { status: 400, body: { error: "缺少 baseURL/apiKey" } }
+  try {
+    // createProvider 不搬 headers（core.mjs:56 只搬 format 等字段），探针对象上补回取用的那份
+    const provider = { ...t.provider.createProvider({ ...spec, model: spec.model || LIST_PROBE_MODEL }), headers: spec.headers }
+    const models = await t.provider.listModels(provider, { signal: AbortSignal.timeout(8000) })
+    return { status: 200, body: { ok: true, models } }
+  } catch (err) {
+    const error = err?.message ?? String(err)
+    return { status: 200, body: { ok: false, error, reason: modelsProbeReason(err, error) } }
+  }
 }
 
 /** provider upsert：写内核 config + 热更新实例池（apiKey 缺省 = 保留原 key） */

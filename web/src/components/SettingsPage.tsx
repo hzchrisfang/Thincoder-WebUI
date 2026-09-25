@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { api } from "../lib/api"
 import type { Preset, ProvidersConfig, SubagentModelsConfig } from "../lib/types"
-import { SUBAGENT_ROLES } from "../lib/subagentRoles"
+import { SUBAGENT_ROLES, roleLabel } from "../lib/subagentRoles"
 import LanQR from "./LanQR"
+import ModelSelect from "./ModelSelect"
 import Tooltip from "./Tooltip"
 
 /** 设置页 —— 供应商管理 / 子代理模型 / embedding / 安全 */
@@ -18,6 +19,12 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
   const [testResult, setTestResult] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
 
+  // 表单「模型」字段的清单探针（新增/编辑供应商表单专用；供应商行下拉走 modelsCache，两者互不干扰）
+  // key = 发起请求那一刻的「渠道身份」快照——只有 key 匹配当前表单时才把清单交给控件
+  const [formModels, setFormModels] = useState<{ key: string; ok: boolean; list?: string[]; error?: string; reason?: string } | null>(null)
+  const [formLoading, setFormLoading] = useState(false)
+  const probeSeq = useRef(0) // 探针序号：并发/重拉时只认最后一次的结果
+
   // embedding
   const [embedKey, setEmbedKey] = useState("")
 
@@ -28,7 +35,7 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
 
   // 模型清单缓存（testProvider = listModels 面，8s 超时）——供应商行「模型」下拉与子代理二级菜单共用；
   // loadingOpen = 正在拉哪个渠道（打开态由调用方自持，两处入口互不干扰）
-  const [modelsCache, setModelsCache] = useState<Record<string, { ok: boolean; list?: string[]; error?: string }>>({})
+  const [modelsCache, setModelsCache] = useState<Record<string, { ok: boolean; list?: string[]; error?: string; reason?: string }>>({})
   const [modelsOpen, setModelsOpen] = useState<string | null>(null)
   const [loadingOpen, setLoadingOpen] = useState<Set<string>>(new Set())
 
@@ -63,6 +70,13 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
     setTimeout(() => setNotice(null), 4000)
   }
 
+  /** 改表单字段：顺手清掉过期的错误横幅——错误是「上一次操作」的结论，字段一动就该了结
+   *  （否则「拉取清单需要先填 baseURL 与 API key」会一直挂到用户手动关闭或保存为止） */
+  const updateForm = (patch: Partial<typeof form>) => {
+    setForm((f) => ({ ...f, ...patch }))
+    setErr(null)
+  }
+
   const startAdd = () => {
     const first = presets[0]
     setEditing("")
@@ -76,10 +90,66 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
     setForm({ name: p.name, baseURL: p.baseURL, apiKey: "", model: p.model })
   }
 
+  // 表单「渠道身份」快照——清单只在 key 匹配时才算当前渠道的清单（编辑渠道 A 拉回的清单、
+  // 或改了 name/baseURL/key 之后的旧清单，不得冒充当前渠道；状态在该了结的地方了结）
+  const formKey = `${editing ?? ""}|${form.name}|${form.baseURL}|${form.apiKey}`
+
+  /** 拉模型清单：清空旧清单 + 置 loading → 结果与「发请求那一刻的 formKey」一起落盘。
+   *  只认最后一次探针的结果（seq）——先发后到的旧结果连 loading 一起作废，
+   *  不让旧请求把新请求的「拉取中」状态抹掉 */
+  const probeForm = useCallback(
+    async (spec: { name?: string; baseURL?: string; apiKey?: string }) => {
+      const key = formKey // 发请求那一刻的渠道身份快照
+      const seq = ++probeSeq.current
+      setFormModels(null)
+      setFormLoading(true)
+      try {
+        const r = await api.probeModels(spec)
+        if (seq === probeSeq.current) setFormModels({ key, ok: r.ok, list: r.models, error: r.error, reason: r.reason })
+      } catch (e) {
+        if (seq === probeSeq.current) setFormModels({ key, ok: false, error: e instanceof Error ? e.message : String(e) })
+      } finally {
+        if (seq === probeSeq.current) setFormLoading(false)
+      }
+    },
+    [formKey]
+  )
+
+  // 进入编辑态（非空名称）时自动探针一次；新增模式改由 key 输入框失焦触发（见下方 onBlur）
+  useEffect(() => {
+    if (editing) probeForm({ name: editing })
+    // 依赖只有 editing：probeForm 随表单输入变化，入依赖会退化成逐键探针
+  }, [editing])
+
+  /** 手动拉取 / 重新拉取清单：编辑模式传 name（baseURL 走存量，新填的 key 覆盖存量）；
+   *  新增模式必须自己给全 baseURL + key——缺哪项就明说到缺哪项，不静默不给按钮 */
+  const reloadFormModels = () => {
+    if (editing) {
+      probeForm({ name: form.name, apiKey: form.apiKey.trim() || undefined })
+      return
+    }
+    const baseURL = form.baseURL.trim()
+    const apiKey = form.apiKey.trim()
+    if (!baseURL || !apiKey) {
+      setErr("拉取清单需要先填 baseURL 与 API key")
+      return
+    }
+    probeForm({ baseURL, apiKey })
+  }
+
   const saveForm = async () => {
-    if (!form.name.trim() || !form.baseURL.trim() || !form.model.trim()) {
+    // trim 只去前后空白，**绝不改大小写**——渠道对模型名大小写敏感度不一，错大小写 → 运行期 400/404
+    const model = form.model.trim()
+    if (!form.name.trim() || !form.baseURL.trim() || !model) {
       setErr("名称 / baseURL / 模型为必填")
       return
+    }
+    // 软校验：只在「拿到了非空清单」时对照（空清单 = 渠道没给候选，不算用户填错）；
+    // 命中判定精确大小写敏感（includes），不得 lowercased 比较
+    const cached = formModels?.key === formKey && formModels.ok ? formModels.list ?? null : null
+    const list = cached && cached.length ? cached : null
+    if (list && !list.includes(model)) {
+      if (!window.confirm(`「${model}」不在渠道清单中（清单 ${list.length} 项），可能拼写有误。仍要保存？`)) return
     }
     setBusy(true)
     setErr(null)
@@ -89,18 +159,18 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
           setErr("新增供应商必须填写 API key")
           return
         }
-        await api.saveProvider({ ...form, apiKey: form.apiKey.trim() })
+        await api.saveProvider({ ...form, model, apiKey: form.apiKey.trim() })
       } else {
         await api.upsertProvider({
           name: form.name,
           baseURL: form.baseURL,
-          model: form.model,
+          model,
           apiKey: form.apiKey.trim() || undefined, // 留空 = 保留原 key
         })
       }
       setEditing(null)
       setForm({ name: "", baseURL: "", apiKey: "", model: "" })
-      flash("已保存")
+      flash(list ? "已保存" : "已保存；未能拉取渠道清单，已按所填模型名原样保存（部分渠道区分大小写）")
       load()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -112,8 +182,10 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
   const remove = async (name: string) => {
     if (!window.confirm(`删除供应商「${name}」？`)) return
     try {
-      await api.deleteProvider(name)
-      flash("已删除")
+      const r = await api.deleteProvider(name)
+      // 指向被删渠道的子代理模型由服务端级联回退「跟随主线」（见 DELETE /api/config/providers）——如实告知，不静默
+      const back = (r.reverted ?? []).map((k) => roleLabel(k) ?? k).join("、")
+      flash(back ? `已删除；子代理模型「${back}」已回退为跟随主线` : "已删除")
       load()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -180,7 +252,7 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
     setLoadingOpen((s) => new Set(s).add(name))
     try {
       const r = await api.testProvider(name)
-      setModelsCache((c) => ({ ...c, [name]: { ok: r.ok, list: r.models, error: r.error } }))
+      setModelsCache((c) => ({ ...c, [name]: { ok: r.ok, list: r.models, error: r.error, reason: r.reason } }))
     } catch (e) {
       setModelsCache((c) => ({ ...c, [name]: { ok: false, error: e instanceof Error ? e.message : String(e) } }))
     } finally {
@@ -270,26 +342,22 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
             return (
               <div key={p.name} className={`border-t border-line px-4 py-3 first:border-t-0 ${active ? "bg-accent-soft/40" : ""}`}>
                 <div className="flex items-center gap-2.5">
-                  <Tooltip label="设为激活" side="right">
-                    <input
-                      type="radio"
-                      name="active-provider"
-                      checked={active}
-                      onChange={() => activate(p.name)}
-                      className="accent-accent"
-                    />
-                  </Tooltip>
+                  <input
+                    type="radio"
+                    name="active-provider"
+                    checked={active}
+                    onChange={() => activate(p.name)}
+                    className="accent-accent"
+                  />
                   <span className="text-sm font-medium text-t1">{p.name}</span>
                   {active && (
                     <span className="rounded-full bg-emerald-950 px-2 py-0.5 text-xs font-medium text-emerald-300">
                       激活
                     </span>
                   )}
-                  <Tooltip label={p.baseURL} side="right" className="min-w-0 flex-1">
-                    <span className="min-w-0 w-full block truncate font-mono text-xs text-t4">
-                      {p.model} · {p.baseURL}
-                    </span>
-                  </Tooltip>
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-t4">
+                    {p.model} · {p.baseURL}
+                  </span>
                   <span className={`shrink-0 text-xs ${p.hasKey ? "text-emerald-400" : "text-red-400"}`}>
                     {p.hasKey ? `key ····${p.keyTail}` : "无 key"}
                   </span>
@@ -318,7 +386,7 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
                           </button>
                           {loadingOpen.has(p.name) && <div className="px-3.5 py-2 text-xs text-t4">拉取模型清单中…</div>}
                           {modelsCache[p.name] && !modelsCache[p.name].ok && (
-                            <div className="px-3.5 py-2 text-xs text-red-300">拉取失败：{modelsCache[p.name].error}</div>
+                            <div className="px-3.5 py-2 text-xs text-red-300">{modelsCache[p.name].reason ?? "无法拉取清单"}</div>
                           )}
                           {modelsCache[p.name]?.list
                             ?.filter((m) => m !== p.model)
@@ -364,7 +432,7 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
             {presets.map((ps) => (
               <button
                 key={ps.name}
-                onClick={() => setForm((f) => ({ ...f, name: ps.name, baseURL: ps.baseURL, model: ps.model }))}
+                onClick={() => updateForm({ name: ps.name, baseURL: ps.baseURL, model: ps.model })}
                 className={`rounded-full px-2.5 py-1 text-xs transition-colors ${
                   form.name === ps.name
                     ? "bg-accent text-white"
@@ -378,26 +446,35 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
             <input
               value={form.name}
-              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              onChange={(e) => updateForm({ name: e.target.value })}
               placeholder="名称"
               className="field px-3 py-2 text-xs"
             />
-            <input
+            <ModelSelect
               value={form.model}
-              onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
+              onChange={(v) => updateForm({ model: v })}
+              // 只有「清单身份 === 当前表单身份」时才把清单交下去，过期清单一律按未拉取处理
+              list={formModels?.key === formKey ? formModels : null}
+              loading={formLoading}
+              onReload={reloadFormModels}
               placeholder="模型（如 deepseek-chat）"
-              className="field px-3 py-2 text-xs"
             />
             <input
               value={form.baseURL}
-              onChange={(e) => setForm((f) => ({ ...f, baseURL: e.target.value }))}
+              onChange={(e) => updateForm({ baseURL: e.target.value })}
               placeholder="baseURL（OpenAI 兼容）"
               className="field px-3 py-2 text-xs sm:col-span-2"
             />
             <input
               type="password"
               value={form.apiKey}
-              onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
+              onChange={(e) => updateForm({ apiKey: e.target.value })}
+              // 新增模式：baseURL 是合法 http(s) 地址且 key 非空时，失焦即探针一次（保存前就能拿到清单）
+              onBlur={() => {
+                if (editing === "" && /^https?:\/\//.test(form.baseURL) && form.apiKey.trim()) {
+                  probeForm({ baseURL: form.baseURL, apiKey: form.apiKey.trim() })
+                }
+              }}
               placeholder={editing === "" ? "API key" : "API key（留空 = 保留原 key）"}
               className="field px-3 py-2 text-xs sm:col-span-2"
             />

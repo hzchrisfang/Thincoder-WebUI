@@ -98,14 +98,26 @@ export const api = {
   providersConfig: () => request<ProvidersConfig>("/api/config/providers"),
   upsertProvider: (p: { name: string; baseURL: string; apiKey?: string; model: string }) =>
     request("/api/config/providers", { method: "PUT", body: JSON.stringify(p) }),
+  /** 删除供应商。返回 `reverted` = 因本次删除而被回退成「跟随主线」的子代理类型（explore/coder/advisor） */
   deleteProvider: (name: string) =>
-    request("/api/config/providers", { method: "DELETE", body: JSON.stringify({ name }) }),
+    request<{ ok: boolean; activeProvider?: string | null; reverted?: string[] }>("/api/config/providers", {
+      method: "DELETE",
+      body: JSON.stringify({ name }),
+    }),
   setActiveProvider: (name: string, model?: string) =>
     request("/api/config/active", { method: "POST", body: JSON.stringify({ name, model }) }),
   testProvider: (name: string) =>
-    request<{ ok: boolean; models?: string[]; error?: string }>("/api/config/test", {
+    request<{ ok: boolean; models?: string[]; error?: string; reason?: string }>("/api/config/test", {
       method: "POST",
       body: JSON.stringify({ name }),
+    }),
+  /** 拉模型清单（GET /models）——已保存渠道传 name（apiKey 可覆盖存量 key）/ 未保存渠道传 baseURL+apiKey。
+   *  与 testProvider 分开：清单探针不需要 model（新增渠道保存前即可拉）。
+   *  失败时：`reason` = 给人看的一句短话（界面只显示它）；`error` = 上游原始报文（只供排查，不上界面）。 */
+  probeModels: (spec: { name?: string; baseURL?: string; apiKey?: string }) =>
+    request<{ ok: boolean; models?: string[]; error?: string; reason?: string }>("/api/config/models", {
+      method: "POST",
+      body: JSON.stringify(spec),
     }),
   /** 子代理模型（探索/编码/审阅）：GET 读当前三类；PUT 部分补丁——只传要改的类，
    *  值 = "provider:model" 复合或 null（清除 = 跟随主线）。 */
