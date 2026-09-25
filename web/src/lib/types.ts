@@ -16,6 +16,9 @@ export type TimelineItem =
   | { kind: "assistant"; id: string; text: string; reasoning: string; done: boolean }
   | { kind: "tool"; id: string; tool: ToolCardData }
   | { kind: "plan"; id: string; plan: string }
+  /** 子代理完成报告（内核注入 history 的报告提醒）——摘要可折叠，展开为正文原文（不截断）。
+   *  ref = `role#id`；时间线是报告的持久载体（面板行的报告区只是活视图的一份副本）。 */
+  | { kind: "report"; id: string; ref: string; status: "done" | "error"; text: string }
   /** 一轮运行收尾：完成时间 + 该轮 token 消耗（实时流由 run_end 产出；历史重建从用量库按时间窗聚合）；digest=true 是自动消化轮 */
   | { kind: "runEnd"; id: string; ts: number; prompt: number; completion: number; digest?: boolean }
   | {
@@ -159,6 +162,14 @@ export interface SubagentsUpdateEvent extends ServerEvent {
   type: "subagents_update"
   items?: SubagentItem[]
   stats?: SubagentStats
+}
+
+/** 子代理报告 → 时间线的实时投递（字段与 buildHistory 的 report 条目同形；正文整段不截断） */
+export interface SubagentReportEvent extends ServerEvent {
+  type: "subagent_report"
+  ref?: string
+  status?: "done" | "error"
+  text?: string
 }
 
 /** 后台池计数（挂起驱动的状态面）：运行中 / 排队 / 待消化 / 已完成 */
@@ -309,7 +320,17 @@ export interface ProviderInfo {
 export interface ProvidersConfig {
   providers: ProviderInfo[]
   activeProvider: string | null
+  /** 当前主线模型名（defaultModel 复合值的模型段；无效/缺失 → null） */
+  activeModel: string | null
   embedding: { configured: boolean; baseURL: string | null; model: string | null }
+}
+
+/** 子代理模型配置（三类各自独立；null = 跟随主线）。explore/coder 写内核
+ *  agent.subagentModels，advisor 写 agent.advisor.provider/model。 */
+export interface SubagentModelsConfig {
+  explore: string | null
+  coder: string | null
+  advisor: string | null
 }
 
 // ---------- M4：定时任务 ----------

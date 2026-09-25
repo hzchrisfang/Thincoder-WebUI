@@ -1,5 +1,6 @@
 import { useState } from "react"
 import type { ApprovalMode, ProviderStatus, SubagentItem, SubagentStats, ThinkingInfo } from "../lib/types"
+import { SUBAGENT_ROLES } from "../lib/subagentRoles"
 import Tooltip from "./Tooltip"
 
 interface Props {
@@ -78,8 +79,9 @@ export default function TopBar(p: Props) {
   const sdFinished = Math.min(sd?.finished ?? 0, sdDispatched)
   const sdFailed = sd?.failed ?? 0
   // 悬停明细：失败数 / 排队数（数字只在 > 0 时出现，与「dispatched=0 不显数字」同为克制策略）
+  // 类型名与设置页「子代理模型」区块同源（探索 / 编码 / 审阅）
   const subTip = [
-    "子代理面板（agent 派发的 explore / coder / 审阅等子任务进度）",
+    `子代理面板（agent 派发的${SUBAGENT_ROLES.map((r) => r.label).join(" / ")}等子任务进度）`,
     sdDispatched > 0 ? `本会话已结束 ${sdFinished} / 已派发 ${sdDispatched}` : "",
     sdFailed > 0 ? `失败 ${sdFailed}` : "",
     subQueueing > 0 ? `排队 ${subQueueing}` : "",

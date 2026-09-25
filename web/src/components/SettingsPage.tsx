@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react"
 import { api } from "../lib/api"
-import type { Preset, ProvidersConfig } from "../lib/types"
+import type { Preset, ProvidersConfig, SubagentModelsConfig } from "../lib/types"
+import { SUBAGENT_ROLES } from "../lib/subagentRoles"
 import LanQR from "./LanQR"
 import Tooltip from "./Tooltip"
 
-/** 设置页 —— 供应商管理 / embedding / 安全 */
+/** 设置页 —— 供应商管理 / 子代理模型 / embedding / 安全 */
 export default function SettingsPage({ onProviderChanged }: { onProviderChanged: () => void }) {
   const [cfg, setCfg] = useState<ProvidersConfig | null>(null)
   const [presets, setPresets] = useState<Preset[]>([])
@@ -19,6 +20,17 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
 
   // embedding
   const [embedKey, setEmbedKey] = useState("")
+
+  // 子代理模型（探索/编码/审阅）：三类当前值 + 二级菜单打开态（哪一类展开 / 哪个渠道展开）
+  const [subModels, setSubModels] = useState<SubagentModelsConfig | null>(null)
+  const [subMenuOpen, setSubMenuOpen] = useState<"explore" | "coder" | "advisor" | null>(null)
+  const [subProvOpen, setSubProvOpen] = useState<string | null>(null)
+
+  // 模型清单缓存（testProvider = listModels 面，8s 超时）——供应商行「模型」下拉与子代理二级菜单共用；
+  // loadingOpen = 正在拉哪个渠道（打开态由调用方自持，两处入口互不干扰）
+  const [modelsCache, setModelsCache] = useState<Record<string, { ok: boolean; list?: string[]; error?: string }>>({})
+  const [modelsOpen, setModelsOpen] = useState<string | null>(null)
+  const [loadingOpen, setLoadingOpen] = useState<Set<string>>(new Set())
 
   // 安全
   const [host, setHostState] = useState<string | null>(null)
@@ -41,6 +53,7 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
       setLanAddresses(h.lanAddresses ?? [])
     })
     api.tokenInfo().then((t) => setToken(t.token)).catch(() => {})
+    api.subagentModels().then(setSubModels).catch(() => {})
   }, [onProviderChanged])
 
   useEffect(load, [load])
@@ -146,6 +159,57 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
     }
   }
 
+  // ---- 子代理模型（即选即存；PUT 部分补丁只传当前类） ----
+  const saveSubModel = async (kind: "explore" | "coder" | "advisor", ref: string | null) => {
+    setBusy(true)
+    setErr(null)
+    try {
+      const r = await api.setSubagentModel(kind, ref)
+      setSubModels({ explore: r.explore, coder: r.coder, advisor: r.advisor })
+      flash(ref ? "已保存，对之后派发的子任务生效" : "已恢复跟随主线")
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // ---- 模型清单拉取（供应商行「模型」下拉与子代理二级菜单共用；结果缓存，已拉过不发请求） ----
+  const ensureModels = async (name: string) => {
+    if (modelsCache[name] || loadingOpen.has(name)) return
+    setLoadingOpen((s) => new Set(s).add(name))
+    try {
+      const r = await api.testProvider(name)
+      setModelsCache((c) => ({ ...c, [name]: { ok: r.ok, list: r.models, error: r.error } }))
+    } catch (e) {
+      setModelsCache((c) => ({ ...c, [name]: { ok: false, error: e instanceof Error ? e.message : String(e) } }))
+    } finally {
+      setLoadingOpen((s) => { const n = new Set(s); n.delete(name); return n })
+    }
+  }
+
+  // 供应商行「模型」下拉开关（拉清单复用 ensureModels）
+  const toggleModels = (name: string) => {
+    if (modelsOpen === name) {
+      setModelsOpen(null)
+      return
+    }
+    setModelsOpen(name)
+    ensureModels(name)
+  }
+
+  const setMain = async (name: string, model?: string) => {
+    setModelsOpen(null)
+    setErr(null)
+    try {
+      await api.setActiveProvider(name, model)
+      flash(`主线已切换：${name}${model ? ` · ${model}` : "（渠道当前模型）"}`)
+      load()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   const switchHost = async (h: string) => {
     if (h === host) return
     if (h === "0.0.0.0" && !window.confirm("开放局域网访问？持有 token 的设备可完全操作本服务（含 shell）。")) return
@@ -195,8 +259,9 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
         </button>
       </div>
 
+      {/* 供应商列表容器不用 overflow-hidden：会把「模型」下拉裁剪在容器内（与 0.8.6 目录菜单同族问题）；圆角改由首末行各自负责 */}
       {cfg && (
-        <div className="mb-4 overflow-hidden rounded-xl border border-line">
+        <div className="mb-4 rounded-xl border border-line [&>*:first-child]:rounded-t-xl [&>*:last-child]:rounded-b-xl">
           {cfg.providers.length === 0 && (
             <div className="px-4 py-4 text-xs text-t4">尚未配置任何供应商</div>
           )}
@@ -231,6 +296,49 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
                   <button onClick={() => test(p.name)} className="btn-ghost shrink-0 px-2.5 py-1 text-xs">
                     测试
                   </button>
+                  {/* 模型下拉：同一供应商的任意模型设为主线（defaultModel 复合值，不限于渠道默认） */}
+                  <div className="relative shrink-0">
+                    <button onClick={() => toggleModels(p.name)} className="btn-ghost px-2.5 py-1 text-xs">
+                      模型
+                    </button>
+                    {modelsOpen === p.name && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setModelsOpen(null)} />
+                        <div className="absolute right-0 top-full z-50 mt-1.5 w-64 max-h-72 overflow-y-auto rounded-xl border border-line bg-surface shadow-lg">
+                          <div className="sticky top-0 border-b border-line bg-surface px-3.5 py-2 text-xs text-t4">
+                            选择模型（{p.name}）
+                          </div>
+                          <button
+                            onClick={() => setMain(p.name)}
+                            className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-xs transition-colors hover:bg-hover ${cfg.activeProvider === p.name && (!cfg.activeModel || cfg.activeModel === p.model) ? "text-accent" : "text-t2"}`}
+                          >
+                            <span className={`w-3.5 shrink-0 ${cfg.activeProvider === p.name && (!cfg.activeModel || cfg.activeModel === p.model) ? "" : "invisible"}`}>✓</span>
+                            <span className="font-mono">{p.model}</span>
+                            <span className="ml-auto shrink-0 text-t4">当前</span>
+                          </button>
+                          {loadingOpen.has(p.name) && <div className="px-3.5 py-2 text-xs text-t4">拉取模型清单中…</div>}
+                          {modelsCache[p.name] && !modelsCache[p.name].ok && (
+                            <div className="px-3.5 py-2 text-xs text-red-300">拉取失败：{modelsCache[p.name].error}</div>
+                          )}
+                          {modelsCache[p.name]?.list
+                            ?.filter((m) => m !== p.model)
+                            .map((m) => (
+                              <button
+                                key={m}
+                                onClick={() => setMain(p.name, m)}
+                                className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-xs transition-colors hover:bg-hover ${cfg.activeProvider === p.name && cfg.activeModel === m ? "text-accent" : "text-t2"}`}
+                              >
+                                <span className={`w-3.5 shrink-0 ${cfg.activeProvider === p.name && cfg.activeModel === m ? "" : "invisible"}`}>✓</span>
+                                <span className="min-w-0 truncate font-mono">{m}</span>
+                              </button>
+                            ))}
+                          {modelsCache[p.name]?.list && modelsCache[p.name].list!.filter((m) => m !== p.model).length === 0 && (
+                            <div className="px-3.5 py-2 text-xs text-t4">清单里没有其他模型</div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
                   <button onClick={() => startEdit(p.name)} className="btn-ghost shrink-0 px-2.5 py-1 text-xs">
                     编辑
                   </button>
@@ -304,6 +412,102 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
           </div>
         </div>
       )}
+
+      {/* ================= 子代理模型 ================= */}
+      <h2 className="mb-0.5 text-sm font-medium text-t1">子代理模型</h2>
+      <p className="mb-3 text-xs text-t4">为不同类型的子任务指定模型；默认跟随主线。对之后派发的子任务生效，运行中的不变。</p>
+      <div className="mb-7 rounded-xl border border-line bg-surface px-4 py-3.5">
+        {cfg && cfg.providers.length === 0 ? (
+          <div className="text-xs text-t4">先在上方「模型供应商」配置渠道，才能为子任务指定模型。</div>
+        ) : (
+          <div className="flex flex-col gap-2.5">
+            {SUBAGENT_ROLES.map((role) => {
+              const current = subModels?.[role.key] ?? null
+              const menuOpen = subMenuOpen === role.key
+              return (
+                <div key={role.key} className="flex flex-wrap items-center gap-2">
+                  <span className="w-14 shrink-0 text-xs font-medium text-t1">{role.label}</span>
+                  <Tooltip label={role.hint} side="right">
+                    <span className="cursor-help text-xs text-t4">ⓘ</span>
+                  </Tooltip>
+                  {/* 二级菜单：一级选渠道，二级拉该渠道模型清单（与供应商行「模型」按钮同源同缓存） */}
+                  <div className="relative min-w-0 max-w-xs flex-1">
+                    <button
+                      onClick={() => setSubMenuOpen(menuOpen ? null : role.key)}
+                      disabled={busy}
+                      className="field flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-xs"
+                    >
+                      <span className={`min-w-0 truncate ${current ? "font-mono" : "text-t3"}`}>{current ?? "跟随主线"}</span>
+                      <span className="shrink-0 text-t4">▾</span>
+                    </button>
+                    {menuOpen && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setSubMenuOpen(null)} />
+                        <div className="absolute left-0 top-full z-50 mt-1.5 max-h-72 w-64 overflow-y-auto rounded-xl border border-line bg-surface shadow-lg">
+                          <div className="sticky top-0 border-b border-line bg-surface px-3.5 py-2 text-xs text-t4">跟随主线，或选渠道指定模型</div>
+                          <button
+                            onClick={() => { setSubMenuOpen(null); saveSubModel(role.key, null) }}
+                            className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-xs transition-colors hover:bg-hover ${current ? "text-t2" : "text-accent"}`}
+                          >
+                            <span className={`w-3.5 shrink-0 ${current ? "invisible" : ""}`}>✓</span>
+                            <span>跟随主线</span>
+                          </button>
+                          {cfg?.providers.map((pv) => {
+                            const expanded = subProvOpen === `${role.key}:${pv.name}`
+                            // 渠道行模型显示跟随本类选择（用户裁定 2026-09-25）：该渠道正是本类当前所选
+                            // → 显示所选模型；否则显示渠道当前模型（主线语境）。纯显示派生，零刷新机制。
+                            const rowModel = current?.startsWith(`${pv.name}:`) ? current.slice(pv.name.length + 1) : pv.model
+                            return (
+                              <div key={pv.name} className="border-t border-line/60 first:border-t-0">
+                                <button
+                                  onClick={async () => {
+                                    if (expanded) { setSubProvOpen(null); return }
+                                    setSubProvOpen(`${role.key}:${pv.name}`)
+                                    await ensureModels(pv.name) // 拉清单（共享缓存，已拉过不发请求；不动供应商行的打开态）
+                                  }}
+                                  className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-xs transition-colors hover:bg-hover ${current?.startsWith(`${pv.name}:`) ? "text-accent" : "text-t2"}`}
+                                >
+                                  <span className={`w-3.5 shrink-0 ${current?.startsWith(`${pv.name}:`) ? "" : "invisible"}`}>✓</span>
+                                  <span className="shrink-0 font-medium">{pv.name}</span>
+                                  <span className="min-w-0 truncate font-mono text-t4">{rowModel}</span>
+                                  <span className="ml-auto shrink-0 text-t4">{expanded ? "▾" : "▸"}</span>
+                                </button>
+                                {expanded && (
+                                  <div className="bg-surface2/40 pb-1">
+                                    {loadingOpen.has(pv.name) && (
+                                      <div className="px-3.5 py-1.5 pl-9 text-xs text-t4">拉取模型清单中…</div>
+                                    )}
+                                    {modelsCache[pv.name] && !modelsCache[pv.name].ok && (
+                                      <div className="px-3.5 py-1.5 pl-9 text-xs text-red-300">拉取失败：{modelsCache[pv.name].error}</div>
+                                    )}
+                                    {modelsCache[pv.name]?.list?.map((m) => (
+                                      <button
+                                        key={m}
+                                        onClick={() => { setSubMenuOpen(null); setSubProvOpen(null); saveSubModel(role.key, `${pv.name}:${m}`) }}
+                                        className={`flex w-full items-center gap-2 py-1.5 pl-9 pr-3.5 text-left text-xs transition-colors hover:bg-hover ${current === `${pv.name}:${m}` ? "text-accent" : "text-t2"}`}
+                                      >
+                                        <span className={`w-3.5 shrink-0 ${current === `${pv.name}:${m}` ? "" : "invisible"}`}>✓</span>
+                                        <span className="min-w-0 truncate font-mono">{m}</span>
+                                      </button>
+                                    ))}
+                                    {modelsCache[pv.name]?.ok && modelsCache[pv.name].list?.length === 0 && (
+                                      <div className="px-3.5 py-1.5 pl-9 text-xs text-t4">清单为空</div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
 
       {/* ================= embedding ================= */}
       <h2 className="mb-3 text-sm font-medium text-t1">向量检索（embedding，可选）</h2>

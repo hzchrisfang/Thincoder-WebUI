@@ -615,8 +615,12 @@ body {
   }
 }
 
-/* 运行中旋转点 */
+/* 运行中旋转点。
+   display:inline-block 必须有：本 class 常被渲染为行内 span（如 SubagentPanel 的状态列，
+   外层非 flex 容器）——行内元素 width/height 无效，11px 圆会塌成一条竖线（用户实测 2026-09-25）。
+   加 inline-block 后行内场景按块盒渲染尺寸；flex 容器内的既有使用处不受影响。 */
 .spinner {
+  display: inline-block;
   width: 11px;
   height: 11px;
   border-radius: 9999px;

@@ -18,6 +18,11 @@
  * 安全红线：只读标量与短数组——**绝不把池条目对象 / childAgent / report 引用存进表**
  * （内核 releaseSettledEntry 的 OOM 教训：条目在消化窗口结束后会置空引用）；
  * 池读取整段 try/catch 静默降级（读不到就当不在池，绝不影响运行）。
+ *
+ * 报告的归属（面板 vs 时间线）：报告有两个消费面——⓵ 面板行的「完成报告」区（只挂**已存在**的行，
+ * 绝不建行：面板是「活的视图」，不为历史重建兜底）；⓶ **会话时间线**（buildHistory 的 report 条目 +
+ * syncReports 的 `subagent_report` 实时投递）——时间线才是报告的持久载体。投递面按 project 记
+ * 「报告指纹」（`role#id` + 正文）防重（delivered），水合时以同一集合预置。
  */
 
 import * as bus from "../lib/bus.mjs"
@@ -41,7 +46,7 @@ const STOPPED_MARK = "stopped by user"
 const LAST_TEXT_LIMIT = 200
 /** 改动文件收集上限 */
 const FILES_LIMIT = 20
-/** 报告正文上限 */
+/** 面板行报告副本的正文上限（面板详情区是固定高度可滚动的活视图；**时间线副本不截断**，整段投递） */
 const REPORT_LIMIT = 8000
 /** syncReports 最多回扫的 history 条数（从尾部往前） */
 const HISTORY_SCAN_LIMIT = 400
@@ -63,22 +68,27 @@ function statsFor(project, create = false) {
   if (!s && create) { s = { dispatched: 0, removed: 0, failed: 0 }; stats.set(project, s) }
   return s
 }
-/** 建行单点：登记表写入 + 派发计数（ensure / ensureRow 共用——「派发」= 首次出现一个新子代理） */
+/** 建行单点（唯一调用方 `ensure`——「派发」= 首次出现一个新子代理）。
+ *  报告落位**不再**经这里：行不存在就不建（否则 syncReports 的历史重建会虚增「已派发」，且服务重启后
+ *  内核 id 从 1 重计、新实例的同名 `role#id` 会覆盖历史重建的旧行）。 */
 function createRow(project, key) {
   const e = newEntry(key)
   tableFor(project, true).set(key, e)
   statsFor(project, true).dispatched++
   return e
 }
-/** 进度统计（广播 / 快照用）：{ dispatched, finished, failed } */
+/** 进度统计（广播 / 快照用）：{ dispatched, finished, failed }。
+ *  dispatched / finished 是**单调计数**（分母不得因终态行 20 条自裁而封顶）。
+ *  **failed 由表派生**（数 status === "error" 的行），不用累加器：行状态会被更正（同一行先后扫到旧/新报告），
+ *  累加器无法自愈——用户实测「5/5 失败 1」而并无失败行，正是累加器与显示面脱钩（见坑 86）。 */
 export function statsOf(project) {
-  const s = statsFor(project) ?? { dispatched: 0, removed: 0, failed: 0 }
+  const s = statsFor(project) ?? { dispatched: 0, removed: 0 }
   const rows = [...(tables.get(project)?.values() ?? [])]
   const active = rows.filter((e) => !TERMINAL.has(e.status)).length
   return {
     dispatched: s.dispatched,
     finished: Math.max(0, s.dispatched - active - s.removed),
-    failed: s.failed,
+    failed: rows.filter((e) => e.status === "error").length,
   }
 }
 
@@ -95,6 +105,40 @@ const REPORT_RES = [
 ]
 const REPORT_PREFIX = "[System reminder: async "
 
+/** 内核 provider 层抛错的**开头形态封闭集**（LLM API 调用失败：4xx/5xx/网络等）。
+ *  内核对「异步普通子代理失败」不发独立标记——回执仍用 finished 措辞、错误文本作为报告正文
+ *  （P10 实测：错误态唯一独立通道是 escalate 飞刀），面板因此假绿（✓ 已完成但任务实际失败，
+ *  用户配额耗尽实验 2026-09-25 实证）。此处窄化补丁：报告正文以此集合中任一形态**开头** → 终态 error。
+ *
+ *  形态来源（单一权威，两条都出自内核 provider 层——内核换措辞就必须回这两处对账）：
+ *   ① `LLM API error {status}: …` —— 单次失败/不可重试状态
+ *      （`core/provider/core.mjs:445`、`core/provider/retry.mjs:44`）
+ *   ② `{verb} after {N} attempts…` —— 重试耗尽（`core/provider/core.mjs:490`、`core/provider/retry.mjs:87`），
+ *      verb 恰四种：429→`Rate limit not resolved` / 5xx→`Server error persisted` / 其他状态→`Request failed` /
+ *      无状态（fetch/DNS/TLS/代理）→`Network error`
+ *  用户实测的「重试后失败」形态（`Rate limit not resolved after 4 attempts (429): LLM API error 429: …`）
+ *  即 ②：**首部不是 `LLM API error`**，只判后者会漏判 —— 这是集合化而非单前缀的直接原因。
+ *
+ *  **必须用 startsWith 首部匹配（不是子串包含）**：正常报告完全可能**讨论**这些错误串（如专门排查
+ *  错误处理的探索子代理），子串匹配会把它们误判为失败。
+ *  误判面：正常报告不会以这五种形态开头（均为 provider 层异常固定格式，非模型可自由产出的话术）；
+ *  escalate 的 error 通道不走此判据（其回执形态本就独立）。*/
+const LLM_ERROR_LEADS = [
+  "LLM API error ",                    // ① 单次失败（status 后跟冒号）
+  "Rate limit not resolved after ",    // ② 429 重试耗尽
+  "Server error persisted after ",     // ② 5xx 重试耗尽
+  "Request failed after ",             // ② 其他状态码重试耗尽
+  "Network error after ",              // ② 网络/代理/DNS/TLS 重试耗尽
+]
+
+/** 报告终态判定（单一权威：面板挂行与时间线投递共用）：内核 finished 回执 + 正文以 provider 层错误
+ *  **开头形态**开头 → error（假绿改判，见上）；status 已是 error 的（飞刀独立通道）不受影响。 */
+export function reportStatus(status, text) {
+  if (status !== "done") return status
+  const s = String(text)
+  return LLM_ERROR_LEADS.some((lead) => s.startsWith(lead)) ? "error" : status
+}
+
 // ================= 状态 =================
 
 /** relay 文法单一权威（内核 agent/relay-prefix.mjs）——由 runner 每轮 pump 起始注入
@@ -103,6 +147,24 @@ const REPORT_PREFIX = "[System reminder: async "
 let relay = null
 /** project -> Map(key, entry)；entry 只含标量与短数组 */
 const tables = new Map()
+/** project -> Set(fingerprint)：本会话**已投递**过的报告（防重复投递——syncReports 每轮回扫历史）。
+ *  指纹 = `ref` + 正文指纹（**按内容判重，不按名字判重**）：同一份报告不重投，而服务重启 / agent 重建后
+ *  内核 id 从 1 重算撞上同名 ref 时，**新正文仍能投出去**（否则那条报告就永远到不了时间线）。
+ *  水合（buildHistory）时预置同一集合：水合已把这些报告交给客户端，实时投递面据此跳过。
+ *  会话边界（clear）整体作废；**回合起点的安全清空（clearIfIdle）不动它**——否则下一轮回扫会把
+ *  同一份报告再投一遍（客户端已有一条，会出重复块）。 */
+const delivered = new Map()
+
+/** 正文指纹（FNV-1a 32 位；只做去重指纹，不涉密码学用途——几百条量级下碰撞可忽略）。 */
+function bodyFingerprint(text) {
+  const s = String(text)
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  return (h >>> 0).toString(36)
+}
 /** project -> Set(key)：本窗口内已终的 key——迟到 token 不得复活条目（CLI _frozenSubKeys 同款） */
 const tombstones = new Map()
 /** project -> Timeout：合并中的广播 */
@@ -190,14 +252,6 @@ function ensure(project, head) {
   return e
 }
 
-/** 直接建行（报告落位用——不过墓碑闸：报告是权威终态，即使 token 路径已墓碑也要挂上） */
-function ensureRow(project, key) {
-  const t = tableFor(project, true)
-  let e = t.get(key)
-  if (!e) e = createRow(project, key)
-  return e
-}
-
 // ================= 广播 =================
 
 function toItem(e) {
@@ -281,11 +335,12 @@ export function snapshotStatsAll() {
   return out
 }
 
-/** 清空某项目登记表 + 墓碑 + 待发广播，并发一次空 items 的 update */
-export function clear(project) {
+/** 清表唯一执行体（登记表 + 墓碑 + 统计 + 待发广播，发一次空 items 的 update）：clear 与
+ *  clearIfIdle 共用；**不含**已投递集（那一层的作废归会话边界管，见 clear）。 */
+function clearTable(project) {
   const had = tables.delete(project)
   tombstones.delete(project)
-  stats.delete(project) // 会话边界：进度统计随登记表一起归零（「本会话已派发」）
+  stats.delete(project) // 进度统计随登记表一起归零（「本会话已派发」）
   const timer = timers.get(project)
   if (timer) {
     clearTimeout(timer)
@@ -293,6 +348,35 @@ export function clear(project) {
   }
   emitNow(project)
   return Boolean(had)
+}
+
+/** 清空某项目登记表 + 墓碑 + 待发广播（**会话边界**：新建 / 切换会话、回退、移除项目）。 */
+export function clear(project) {
+  const had = clearTable(project)
+  // 已投递集随会话一起作废：换会话/槽位后历史换了，同 ref 的报告（服务重启后内核 id 从 1 重计）须能再投递
+  delivered.delete(project)
+  return had
+}
+
+/**
+ * 安全清空（新一轮**用户**回合的起点；调用点 = runner.pump）：只在「表内无活跃行（running/queued）
+ * ∧ 无待消化行（pending）∧ 内核三池内无未收尾条目」时才清表，返回「是否确有行被清」（与 clear 同口径）。
+ *
+ * 为何不直接调 clear：跨轮累积的行只有在「无活可丢」时才清得安全——有活跃/待消化行时清空会丢掉仍在
+ * 跑的进度，也会让顶栏【子代理】按钮的转圈条件（running ∨ queued ∨ pending）失去依据；
+ * 且 clear 会连带作废已投递集，让下一轮 syncReports 把同一份报告重投一遍（重复块）。
+ * 池判据与 reconcilePool 同源（livePoolIndex）；池读不到（null）按「可能有活」处理——不清。
+ */
+export function clearIfIdle(project, agent = null) {
+  const t = tables.get(project)
+  for (const e of t?.values() ?? []) {
+    if (!TERMINAL.has(e.status) || e.pending === true) return false
+  }
+  if (agent) {
+    const live = livePoolIndex(agent)
+    if (!live || live.size > 0) return false
+  }
+  return clearTable(project)
 }
 
 // ================= 前缀路由（callbacks 委派：true = 已消费，调用方不得再发主线事件） =================
@@ -509,9 +593,10 @@ export function routeToolOutput(project, name, chunk) {
 // ================= 最终报告（异步子代理） =================
 
 /**
- * 扫 agent.history 里的异步子代理报告提醒，把正文挂到对应条目（内核把报告作为 user
- * 消息注入父 history，WebUI 的 buildHistory 会把它滤出会话流——面板是它唯一的可见面）。
- * 幂等：同一 id 同正文重复扫不重复写、不重复广播。整段失败静默（不影响运行收尾）。
+ * 扫 agent.history 里的异步子代理报告提醒（内核把报告作为 user 消息注入父 history）：
+ * ⓵ 把正文挂到**已存在**的面板行（行不存在则跳过——不建行、不计派发，见 attachReport）；
+ * ⓶ 把**首次见到**的报告作 `subagent_report` 投递给会话时间线（报告的持久显示面）。
+ * 幂等：同一份报告（ref + 正文）不重复投递、同一行同正文不重复写、不重复广播。整段失败静默。
  */
 export function syncReports(project, agent) {
   try {
@@ -519,18 +604,51 @@ export function syncReports(project, agent) {
     if (!history?.length) return
     const from = Math.max(0, history.length - HISTORY_SCAN_LIMIT)
     let changed = false
+    const fresh = [] // 首次见到的报告（待投递给时间线）
+    const newest = new Map() // key -> hit：**同 key 只留最新的一份**（回扫序新→旧，首次命中即最新）
     for (let i = history.length - 1; i >= from; i--) {
       const m = history[i]
       if (m?.role !== "user" || typeof m.content !== "string") continue
       if (!m.content.startsWith(REPORT_PREFIX)) continue
-      const hit = matchReport(m.content)
-      if (hit && attachReport(project, hit)) changed = true
+      const hit = parseReportMessage(m.content)
+      if (!hit) continue
+      const key = `${hit.role}#${hit.id}`
+      if (!newest.has(key)) newest.set(key, hit) // 新→旧回扫：首次命中 = 该 key 在历史里最新的报告
+      if (markReportDelivered(project, key, hit.body)) fresh.push(hit)
     }
+    // 面板挂行只取「每 key 最新那份」（见 attachReport 注：旧报告不得覆盖新报告）
+    for (const hit of newest.values()) if (attachReport(project, hit)) changed = true
+    // 上面的回扫是「新→旧」；倒回来按历史顺序投递——客户端据此顺序 append，时间线才不乱序
+    for (const hit of fresh.reverse()) emitReport(project, hit)
     if (changed) flush(project)
   } catch { /* 报告同步失败无碍运行收尾 */ }
 }
 
-function matchReport(content) {
+/** 记「该份报告已投递 / 已随水合交付」；返回 true = 本次是首次（调用方据此投递）。 */
+export function markReportDelivered(project, ref, body) {
+  let set = delivered.get(project)
+  if (!set) {
+    set = new Set()
+    delivered.set(project, set)
+  }
+  const key = `${ref}\u0000${bodyFingerprint(body)}`
+  if (set.has(key)) return false
+  set.add(key)
+  return true
+}
+
+/** 报告 → 时间线的实时投递（客户端 pushItem）。正文整段不截断（时间线是报告的持久载体）；
+ *  广播失败静默——与其余事件同口径，投递不得影响运行收尾。 */
+function emitReport(project, hit) {
+  const text = unescapeXml(hit.body)
+  try {
+    bus.emit({ type: "subagent_report", project, ref: `${hit.role}#${hit.id}`, status: reportStatus(hit.status, text), text })
+  } catch { /* 投递失败不阻塞收尾 */ }
+}
+
+/** 报告提醒解析（单一权威——buildHistory 与 syncReports 共用，绝不另写第二套正则）。
+ *  返回 `{ id, role, status, body }`；body 仍是内核 escapeXml 后的原文，消费方各自 unescape。 */
+export function parseReportMessage(content) {
   for (const p of REPORT_RES) {
     const m = content.match(p.re)
     if (!m) continue
@@ -539,20 +657,30 @@ function matchReport(content) {
   return null
 }
 
+/**
+ * 把报告挂到**已存在**的面板行；行不存在 → 返回 false（**不建行、不计派发**）。
+ * 为何不建行：报告已由会话时间线承载（buildHistory 的 report 条目 + subagent_report 实时投递），面板不再
+ * 需要「历史重建」兜底；而建行会把历史报告算成一次真实派发（计数虚增），服务重启后内核 id 从 1 重计时
+ * 新实例的 `role#id` 还会撞上历史重建的同名行（新记录覆盖旧记录）。其余路径的建行（relay token）不变。
+ *
+ * **旧不覆盖新**：内核 id 在服务重启后从 1 重算 ⇒ 历史里上一实例的同 key 报告会落到本轮新行上；若不加约束，
+ * 回扫遇旧报告就会把行状态改回 error（用户实测「5/5 失败 1」而并无失败行，见坑 86）。约束放在**调用侧**——
+ * `syncReports` 回扫时按 key 只保留**历史里最新**的一份（新→旧序首次命中），本函数只负责无差别地挂那一份；
+ * 跨轮「新报告更正旧状态」因此自然成立（下一轮扫描里最新那份已是新报告）。
+ */
 function attachReport(project, { id, role, status, body }) {
   const key = `${role}#${id}`
   const text = unescapeXml(body)
   const truncated = text.length > REPORT_LIMIT
   const report = truncated ? text.slice(0, REPORT_LIMIT) : text
-  const entry = ensureRow(project, key)
+  const entry = tables.get(project)?.get(key)
+  if (!entry) return false
   if (entry.report === report && entry.reportTruncated === truncated && entry.status === status) return false
   entry.report = report
   entry.reportTruncated = truncated
-  entry.status = status // 报告是权威终态：finished→done / error→error
-  if (status === "error" && entry._errCounted !== true) {
-    entry._errCounted = true // 同一行只记一次（重挂报告不重复计数）
-    const s = statsFor(project, true); if (s) s.failed++
-  }
+  // 假绿改判（单源 = reportStatus）：内核 finished 回执 + 报告正文以 provider 层错误前缀开头 → 终态 error。
+  // status 已是 error 的（飞刀独立通道）不受影响；失败计数由 statsOf 从表派生（不在此处累加）。
+  entry.status = reportStatus(status, report) // 报告是权威终态：finished→done / error→error（假绿改判后同）
   entry.pending = false // 报告已进会话（同步自 history）= 消化完成：待消化标记退场
   entry.currentTool = null
   entry.waitingApproval = false
@@ -564,8 +692,9 @@ function attachReport(project, { id, role, status, body }) {
   return true
 }
 
-/** 反转义内核 escapeXml（helpers.mjs：& < > " '）——&amp; 最后处理，免二次反转义 */
-function unescapeXml(s) {
+/** 反转义内核 escapeXml（helpers.mjs：& < > " '）——&amp; 最后处理，免二次反转义。
+ *  导出供 buildHistory 复用（时间线报告条目与面板报告副本同一套反转义语义，绝不另写一份）。 */
+export function unescapeXml(s) {
   return String(s)
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
@@ -577,14 +706,12 @@ function unescapeXml(s) {
 // ================= 池校正（run_end 兜底） =================
 
 /**
- * run_end 时按内核池（只读标量）校正状态：在池且未收尾 → 保持/置对应状态；
- * 不在池且既无完成事件也无报告 → ended（本轮结束、未见完成事件）。
- * 全程 try/catch 静默降级；绝不存池条目/childAgent/report 引用。
+ * 内核三池的「未收尾条目」索引（key → 池条目）：`role#id`（表 key 同形）与池 key 双写兜底。
+ * reconcilePool（状态校正）与 clearIfIdle（安全清空判据）共用这一份读法——判据单源。
+ * 读失败返回 **null**（≠ 空表）：调用方各自决定降级（校正=保持原样、清空=不清）。
  */
-export function reconcilePool(project, agent) {
+function livePoolIndex(agent) {
   try {
-    const t = tables.get(project)
-    if (!t?.size) return
     const live = new Map()
     for (const pool of [agent?._asyncSubagents, agent?._asyncAdvisors, agent?._consultSessions]) {
       if (!(pool instanceof Map)) continue
@@ -597,6 +724,23 @@ export function reconcilePool(project, agent) {
         live.set(String(k), v) // 表 key 与池 key 同形的兜底
       }
     }
+    return live
+  } catch {
+    return null
+  }
+}
+
+/**
+ * run_end 时按内核池（只读标量）校正状态：在池且未收尾 → 保持/置对应状态；
+ * 不在池且既无完成事件也无报告 → ended（本轮结束、未见完成事件）。
+ * 全程 try/catch 静默降级；绝不存池条目/childAgent/report 引用。
+ */
+export function reconcilePool(project, agent) {
+  try {
+    const t = tables.get(project)
+    if (!t?.size) return
+    const live = livePoolIndex(agent)
+    if (!live) return // 池读不到：表保持原样（降级 = 什么都不改）
     // 待消化条目（挂起会话）：已 settle 的条目在挂起期被移交 pending 单容器（内核 settle 分流
     // / 挂起 sweep），**已出池**——“不在池”对它们不是「本轮结束未见完成事件」，而是「报告在
     // 路上，消化轮随后注入」。键形与报告挂行同源（`${role}#${id}`——attachReport 同式）。

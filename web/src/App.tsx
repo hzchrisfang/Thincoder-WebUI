@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api, ApiError } from "./lib/api"
-import type { ApprovalMode, PendingApproval, PendingRequest, ProviderStatus, RewindSummary, RunEvent, ServerEvent, Snapshot, SubagentItem, SubagentStats, SubagentsUpdateEvent, SuspensionCounts, SuspensionEvent, ThinkingInfo, TimelineItem } from "./lib/types"
+import type { ApprovalMode, PendingApproval, PendingRequest, ProviderStatus, RewindSummary, RunEvent, ServerEvent, Snapshot, SubagentItem, SubagentReportEvent, SubagentStats, SubagentsUpdateEvent, SuspensionCounts, SuspensionEvent, ThinkingInfo, TimelineItem } from "./lib/types"
 import TopBar from "./components/TopBar"
 import Timeline from "./components/Timeline"
 import Composer from "./components/Composer"
@@ -407,6 +407,19 @@ export default function App() {
         const su = ev as unknown as SubagentsUpdateEvent
         setSubagents(su.items ?? [])
         setSubagentStats(su.stats ?? null)
+        break
+      }
+      case "subagent_report": {
+        // 子代理报告进时间线（报告的持久显示面；面板行的报告区只是活视图的一份副本）。
+        // 与 buildHistory 的 report 条目同形——水合会把同一个 ref 预置进服务端投递集，不会重发
+        const sr = ev as unknown as SubagentReportEvent
+        pushItem({
+          kind: "report",
+          id: uid(),
+          ref: String(sr.ref ?? ""),
+          status: sr.status === "error" ? "error" : "done",
+          text: String(sr.text ?? ""),
+        })
         break
       }
       case "usage": {

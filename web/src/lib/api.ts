@@ -14,6 +14,7 @@ import type {
   Preset,
   ProviderStatus,
   ProvidersConfig,
+  SubagentModelsConfig,
   RewindPoints,
   RewindPreview,
   RewindSummary,
@@ -99,12 +100,20 @@ export const api = {
     request("/api/config/providers", { method: "PUT", body: JSON.stringify(p) }),
   deleteProvider: (name: string) =>
     request("/api/config/providers", { method: "DELETE", body: JSON.stringify({ name }) }),
-  setActiveProvider: (name: string) =>
-    request("/api/config/active", { method: "POST", body: JSON.stringify({ name }) }),
+  setActiveProvider: (name: string, model?: string) =>
+    request("/api/config/active", { method: "POST", body: JSON.stringify({ name, model }) }),
   testProvider: (name: string) =>
     request<{ ok: boolean; models?: string[]; error?: string }>("/api/config/test", {
       method: "POST",
       body: JSON.stringify({ name }),
+    }),
+  /** 子代理模型（探索/编码/审阅）：GET 读当前三类；PUT 部分补丁——只传要改的类，
+   *  值 = "provider:model" 复合或 null（清除 = 跟随主线）。 */
+  subagentModels: () => request<SubagentModelsConfig>("/api/config/subagent-models"),
+  setSubagentModel: (kind: "explore" | "coder" | "advisor", ref: string | null) =>
+    request<{ ok: boolean } & SubagentModelsConfig>("/api/config/subagent-models", {
+      method: "PUT",
+      body: JSON.stringify({ [kind]: ref }),
     }),
   saveEmbedding: (apiKey: string) =>
     request("/api/config/embedding", { method: "PUT", body: JSON.stringify({ apiKey }) }),

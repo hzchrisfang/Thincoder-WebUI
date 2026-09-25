@@ -408,6 +408,7 @@ async function handleApi(req, res, url) {
       return json(res, 200, {
         providers: (cfg.providersList ?? []).map(maskProvider),
         activeProvider: activeProviderName(t, cfg.defaultModel, cfg.providersList),
+        activeModel: activeModelOf(t, cfg.defaultModel, cfg.providersList),
         embedding: {
           configured: Boolean(cfg.embedding?.apiKey),
           baseURL: cfg.embedding?.baseURL ?? null,
@@ -472,10 +473,11 @@ async function handleApi(req, res, url) {
     if (p === "/api/config/active" && method === "POST") {
       const body = await readBody(req)
       const name = String(body.name ?? "")
+      const model = body.model == null ? null : String(body.model).trim()
       const t = await loadThincoder()
       const cfg = t.config.loadConfig()
       if (!(cfg.providersList ?? []).some((x) => x.name === name)) return json(res, 404, { error: "供应商不存在" })
-      setActiveProvider(t, name)
+      setActiveProvider(t, name, model) // model 缺省 = 渠道默认模型；给出 = 同一供应商任意模型（provider:model 复合主线）
       return json(res, 200, { ok: true, activeProvider: name })
     }
     // ---- 思考程度（/think 等价面：读状态+档位枚举 / 设档；桥接层复用内核 applyThink） ----
@@ -532,6 +534,22 @@ async function handleApi(req, res, url) {
         entry.agent.memory.embedder = apiKey ? t.embedding.createEmbedder(rawConfig.embedding) : null
       }
       return json(res, 200, { ok: true, configured: Boolean(apiKey) })
+    }
+
+    // ---- 子代理模型（探索/编码/审阅三类指定模型，默认「跟随主线」） ----
+    if (p === "/api/config/subagent-models" && method === "GET") {
+      const t = await loadThincoder()
+      const cfg = t.config.loadConfig()
+      return json(res, 200, subagentModelsOf(t, cfg))
+    }
+    if (p === "/api/config/subagent-models" && method === "PUT") {
+      const body = await readBody(req)
+      const t = await loadThincoder()
+      // 校验 + 落盘（单字段补丁：磁盘新鲜读，多端共存安全——与思考程度设置同式）
+      const patch = await validateSubagentModelPatch(t, body)
+      if (patch.error) return json(res, 400, { error: patch.error })
+      if (Object.keys(patch.values).length) await writeSubagentModelPatch(t, patch)
+      return json(res, 200, { ok: true, ...subagentModelsOf(t, t.config.loadConfig()) })
     }
 
     // ---- MCP 服务器（安装 / 维护：stdio 或 HTTP；写内核 config + 实例池热更新） ----
@@ -937,12 +955,21 @@ function upsertProvider(t, { name, baseURL, apiKey, model }) {
   }
 }
 
-/** 切换激活 provider：写内核 config + 热更新实例池当前模型 */
-function setActiveProvider(t, name) {
+/** 切换激活 provider：写内核 config + 热更新实例池当前模型。
+ *  model 缺省 = 渠道当前模型（原有行为）；给出 = 同一供应商任意模型 —— defaultModel 复合值
+ *  是内核 model-ref 语义（`provider:model`，显式复合一律放行、不校验模型清单）。
+ *  **渠道条目的 model 同步跟随**：用户裁定（2026-09-25）——「渠道的模型」就该显示当前用的那个，
+ *  不是某个固定出厂值；磁盘 providers[].model 与池内条目一并更新，供应商行 / 顶栏菜单 /
+ *  胶囊三处显示自动一致，重启后也一致。原「只改 defaultModel、渠道条目不动」的方案会让
+ *  渠道行与顶栏选项停在旧模型（三处显示分叉），已废。 */
+export function setActiveProvider(t, name, model = null) {
   const rawConfig = t.config.loadConfig()
   const found = (rawConfig.providers ?? []).find((x) => x.name === name)
   if (!found) throw new Error("供应商不存在")
-  rawConfig.defaultModel = `${name}:${found.model}` // 唯一跨重启事实源（activeProvider 已废——内核 loadConfig 读盘即删该字段）
+  const effModel = model || found.model
+  if (!effModel) throw new Error(`供应商「${name}」没有可用模型（渠道条目与指定 model 均为空）`)
+  if (model) found.model = effModel // 渠道条目跟随当前选择（磁盘唯一事实源，loadConfig 全量落盘）
+  rawConfig.defaultModel = `${name}:${effModel}` // 唯一跨重启事实源（activeProvider 已废——内核 loadConfig 读盘即删该字段）
   t.config.saveConfig(rawConfig)
   for (const entry of poolEntries().values()) {
     let pp = entry.agent.providers?.find((x) => x.name === name)
@@ -950,9 +977,132 @@ function setActiveProvider(t, name) {
       pp = { ...found }
       entry.agent.providers = [...(entry.agent.providers ?? []), pp]
     }
+    pp.model = effModel // 池内渠道条目同步跟随（列表显示 / 顶栏菜单选项的数据源）
     entry.agent.provider = { ...pp }
     entry.agent.activeProvider = name
+    entry.agent.activeModel = effModel
   }
+}
+
+// ================= 子代理模型（探索 / 编码 / 审阅） =================
+
+/** 三类子代理的模型引用（"provider:model" 复合）或 null（= 跟随主线）。权威数据源：
+ *  explore/coder ← agent.subagentModels；审阅 ← agent.advisor.provider/model（顶层 advisor 是
+ *  loadConfig 的派生副本——config.mjs promote，只读不落盘）。 */
+export function subagentModelsOf(t, cfg) {
+  const sub = cfg.agent?.subagentModels ?? {}
+  const adv = cfg.advisor ?? {}
+  const advModel = adv.provider && adv.model ? `${adv.provider}:${adv.model}` : null
+  return {
+    explore: typeof sub.explore === "string" && sub.explore ? sub.explore : null,
+    coder: typeof sub.coder === "string" && sub.coder ? sub.coder : null,
+    advisor: advModel,
+  }
+}
+
+/** PUT 校验：仅处理 body 中出现的键（部分补丁——前端即选即存，每次只 PUT 一类）；取值 ∈
+ *  null | "provider:model"。null/空 = 清除（跟随主线）；复合值首段须是已配置渠道（模型段
+ *  不校验——内核 model-ref 语义：显式复合一律放行，模型清单运行期拉取）。 */
+export function validateSubagentModelPatch(t, body) {
+  const cfg = t.config.loadConfig()
+  const known = new Set((cfg.providersList ?? []).map((x) => x.name))
+  const out = {}
+  for (const kind of ["explore", "coder", "advisor"]) {
+    if (!(kind in body)) continue
+    let v = body[kind]
+    if (v == null || v === "") { out[kind] = null; continue }
+    v = String(v).trim()
+    const sep = v.indexOf(":")
+    if (sep <= 0 || !v.slice(sep + 1)) {
+      return { error: `${kind} 的模型引用需为 "provider:model" 复合值（如 deepseek:deepseek-chat）` }
+    }
+    const providerName = v.slice(0, sep)
+    if (!known.has(providerName)) {
+      return { error: `${kind} 引用了未配置的供应商「${providerName}」` }
+    }
+    out[kind] = v
+  }
+  return { values: out }
+}
+
+/** "provider:model" → provider / model 段（首冒号分割，与内核 parseModelRef 同式） */
+function modelRefSplit(ref) {
+  const sep = ref.indexOf(":")
+  return { provider: ref.slice(0, sep), model: ref.slice(sep + 1) }
+}
+
+/** 应用三类模型引用：写 agent.subagentModels / agent.advisor（单字段补丁：磁盘新鲜读，
+ *  多端共存安全——与思考程度设置同式；顶层 advisor 是派生键不落盘，兼容层会剔除）+
+ *  池内热同步（merged config 是活引用，子代理 spawn / advisor 评审即时读取——改完对之后
+ *  派发的生效，运行中的不动）。
+ *  三态语义（用户实测修，2026-09-25）：键不存在（undefined）= 本次未提交，**绝不动它**；
+ *  显式 null = 清除（跟随主线）；字符串 = 写入。此前 else 分支把 undefined 一并当清除，
+ *  PUT 单键会误删另外两类的磁盘配置——「设置一类，其他两类变回跟随主线」即此根因。 */
+export async function writeSubagentModelPatch(t, { values }) {
+  const r = await t.configIo.writeConfigAtomic(t.config.configPath, (raw) => {
+    for (const kind of ["explore", "coder"]) {
+      if (!(kind in values)) continue // 未提交：不动
+      if (values[kind]) {
+        raw.agent ??= {}
+        raw.agent.subagentModels ??= {}
+        raw.agent.subagentModels[kind] = values[kind]
+      } else if (raw.agent?.subagentModels) {
+        delete raw.agent.subagentModels[kind]
+        if (Object.keys(raw.agent.subagentModels).length === 0) delete raw.agent.subagentModels
+      }
+    }
+    if (!("advisor" in values)) {
+      // 未提交：不动（下方池同步同口径）
+    } else if (values.advisor) {
+      const { provider, model } = modelRefSplit(values.advisor)
+      raw.agent ??= {}
+      raw.agent.advisor = { ...(raw.agent.advisor ?? {}), provider, model }
+    } else if (raw.agent?.advisor) {
+      delete raw.agent.advisor.provider // 只清模型覆盖；guard 等其他 advisor 设置保留
+      if (Object.keys(raw.agent.advisor).length === 0) delete raw.agent.advisor
+    }
+  })
+  if (!r?.ok) throw new Error("config changed on disk concurrently — retry")
+  // 池内热同步：agent.config 是 merged 对象的活引用（内核 spawn 子代理 / resolveAdvisorProvider 即时读取）
+  for (const entry of poolEntries().values()) {
+    const cfg = entry.agent.config
+    if (!cfg) continue
+    for (const kind of ["explore", "coder"]) {
+      if (!(kind in values)) continue // 未提交：不动
+      if (values[kind]) {
+        cfg.agent ??= {}
+        cfg.agent.subagentModels ??= {}
+        cfg.agent.subagentModels[kind] = values[kind]
+      } else if (cfg.agent?.subagentModels) {
+        delete cfg.agent.subagentModels[kind]
+        if (Object.keys(cfg.agent.subagentModels).length === 0) delete cfg.agent.subagentModels
+      }
+    }
+    if (!("advisor" in values)) continue
+    const advPatch = values.advisor
+      ? modelRefSplit(values.advisor)
+      : null
+    if (advPatch) {
+      cfg.agent ??= {}
+      cfg.agent.advisor = { ...(cfg.agent.advisor ?? {}), ...advPatch }
+      cfg.advisor = { ...(cfg.advisor ?? {}), ...advPatch } // 派生副本同步（resolveAdvisorProvider 读顶层）
+    } else {
+      for (const adv of [cfg.agent?.advisor, cfg.advisor]) {
+        if (!adv) continue
+        delete adv.provider
+        if (Object.keys(adv).length === 0) {
+          if (cfg.agent?.advisor === adv) delete cfg.agent.advisor
+          if (cfg.advisor === adv) delete cfg.advisor
+        }
+      }
+    }
+  }
+}
+
+/** 当前默认模型名——由 defaultModel 复合值派生（parseModelRef 校验渠道存在，模型段原样返回） */
+export function activeModelOf(t, defaultModel, providers) {
+  const r = t.config.parseModelRef(defaultModel, providers ?? [])
+  return r.ok ? r.model : null
 }
 
 function statSyncIsDir(dir) {

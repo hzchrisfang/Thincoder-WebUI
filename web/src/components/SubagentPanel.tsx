@@ -124,7 +124,7 @@ export default function SubagentPanel({ items, stats, onClose }: Props) {
           <div className="px-2 py-10 text-center text-xs leading-relaxed text-t4">
             暂无子代理。
             <br />
-            agent 派发子任务（explore / coder / 审阅等）
+            agent 派发子任务（探索 / 编码 / 审阅等）
             <br />
             时会在这里显示进度与完成报告。
           </div>

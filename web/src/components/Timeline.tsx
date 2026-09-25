@@ -247,6 +247,30 @@ export default function Timeline({
             )
           }
 
+          if (it.kind === "report") {
+            // 子代理完成报告（内核注入 history 的提醒）：折叠条与工具卡同族、默认折叠——
+            // 报告往往很长，展开即整段原文（不二次截断、可选中复制）
+            const ok = it.status === "done"
+            return (
+              <details
+                key={it.id}
+                className="rise group ml-9 overflow-hidden rounded-xl border border-line bg-surface2/70 text-xs transition-colors open:bg-surface"
+              >
+                <summary className="flex cursor-pointer select-none items-center gap-2.5 px-3.5 py-2.5">
+                  <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${ok ? "bg-emerald-400" : "bg-red-400"}`} />
+                  <span className="shrink-0 text-xs text-t3">子代理报告 ·</span>
+                  <span className="shrink-0 font-mono text-xs font-medium text-accent">{it.ref}</span>
+                  <span className="min-w-0 flex-1" />
+                  <span className={`shrink-0 text-xs ${ok ? "text-t4" : "text-red-300"}`}>{ok ? "已完成" : "出错"}</span>
+                  <span className="shrink-0 text-xs text-t4 transition-transform group-open:rotate-90">▸</span>
+                </summary>
+                <div className="border-t border-line px-3.5 py-3">
+                  <div className="select-text whitespace-pre-wrap break-words text-xs leading-relaxed text-t2">{it.text}</div>
+                </div>
+              </details>
+            )
+          }
+
           if (it.kind === "runEnd") {
             const parts = [fmtTime(it.ts)]
             if (it.prompt > 0 || it.completion > 0) {
