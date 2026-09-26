@@ -1,6 +1,6 @@
 # Thincoder-WebUI
 
-一款基于 [Thincoder](https://gitee.com/shanghai-xinbo/thincoder)（**官网：https://thincoder.com/**）的 Web 客户端，遵循一个朴素的愿景：简洁、方便、好用。
+一款基于 [Thincoder](https://gitee.com/shanghai-xinbo/thincoder)（官网：<https://thincoder.com/>）的 Web 客户端，遵循一个朴素的愿景：简洁、方便、好用。
 
 交互上类似 Codex：你可以在本地或局域网的浏览器里，创建项目、和 Agent 对话、批准它调用工具、查看文件改动。
 
