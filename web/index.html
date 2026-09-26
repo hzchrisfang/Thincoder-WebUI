@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- favicon 用位图 PNG：Chrome「在应用中打开」生成 shim 图标时栅格化不了 SVG data-URI，会退到字母占位图（生成脚本 scripts/gen-icons.mjs） -->
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <!-- 落盘应用图标：Safari「添加到程序坞」取 apple-touch-icon，Chrome「安装应用」取 manifest icons（生成脚本 scripts/gen-icons.mjs） -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <title>thincoder-webui</title>
+    <script>
+      // 首屏防闪烁：渲染前先按持久化偏好落主题类（默认深色）
+      try {
+        if (localStorage.getItem("tcw-theme") === "light") {
+          document.documentElement.classList.remove("dark")
+        } else {
+          document.documentElement.classList.add("dark")
+        }
+      } catch (e) {
+        document.documentElement.classList.add("dark")
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
