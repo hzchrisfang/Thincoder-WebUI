@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api } from "../lib/api"
-import type { Preset, ProvidersConfig, SubagentModelsConfig } from "../lib/types"
+import type { Preset, ProvidersConfig, ConsultModelEntry, ConsultModelsConfig, SubagentModelsConfig } from "../lib/types"
 import { SUBAGENT_ROLES, roleLabel } from "../lib/subagentRoles"
 import LanQR from "./LanQR"
 import ModelSelect from "./ModelSelect"
-import Tooltip from "./Tooltip"
+import Tooltip, { FloatingTooltip } from "./Tooltip"
 
-/** 设置页 —— 供应商管理 / 子代理模型 / embedding / 安全 */
+/** 设置页 —— 供应商管理 / 子代理模型 / 会诊模型 / embedding / 安全 */
 export default function SettingsPage({ onProviderChanged }: { onProviderChanged: () => void }) {
   const [cfg, setCfg] = useState<ProvidersConfig | null>(null)
   const [presets, setPresets] = useState<Preset[]>([])
@@ -33,8 +33,19 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
   const [subMenuOpen, setSubMenuOpen] = useState<"explore" | "coder" | "advisor" | null>(null)
   const [subProvOpen, setSubProvOpen] = useState<string | null>(null)
 
-  // 模型清单缓存（testProvider = listModels 面，8s 超时）——供应商行「模型」下拉与子代理二级菜单共用；
-  // loadingOpen = 正在拉哪个渠道（打开态由调用方自持，两处入口互不干扰）
+  // 会诊模型（多模型会诊）：清单 + 二级菜单打开态（哪一行开着菜单 / 菜单里哪个渠道展开）。
+  // 形态与「子代理模型」区块同款：一级渠道 → 二级模型清单，**点选即落盘**（无草稿值、无提交按钮——
+  // 服务端只收「完整的一条」，二级菜单天然只会产出完整条目，半成品不可能存在）。
+  // 菜单行号：-1 = 「＋ 添加模型」那一行（渲染在清单末尾）。
+  const [consult, setConsult] = useState<ConsultModelsConfig | null>(null)
+  const [consultMenu, setConsultMenu] = useState<number | null>(null)
+  const [consultExpand, setConsultExpand] = useState<string | null>(null)
+  // 清单「读到了吗」：读失败 ≠ 没配置——读失败时不得渲染空态口径，更不得让「＋ 添加模型」落盘
+  // （PUT 是整表写入，会把磁盘上的真实条目覆盖成本地这份空清单）。
+  const [consultErr, setConsultErr] = useState(false)
+
+  // 模型清单缓存（testProvider = listModels 面，8s 超时）——供应商行「模型」下拉、子代理二级菜单、
+  // 会诊行二级菜单三处共用；loadingOpen = 正在拉哪个渠道（打开态由调用方自持，各入口互不干扰）
   const [modelsCache, setModelsCache] = useState<Record<string, { ok: boolean; list?: string[]; error?: string; reason?: string }>>({})
   const [modelsOpen, setModelsOpen] = useState<string | null>(null)
   const [loadingOpen, setLoadingOpen] = useState<Set<string>>(new Set())
@@ -61,6 +72,11 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
     })
     api.tokenInfo().then((t) => setToken(t.token)).catch(() => {})
     api.subagentModels().then(setSubModels).catch(() => {})
+    api.consultModels()
+      .then((r) => { setConsult(r); setConsultErr(false) })
+      // 读失败：除亮失败态，还要**收起已打开的菜单**——否则草稿行/行菜单会带着「本地空清单」
+      // 的上下文继续对着屏幕，用户一点选就是一次整表 PUT（「在此之前不会写入」得是硬保证）。
+      .catch(() => { setConsultErr(true); setConsultMenu(null); setConsultExpand(null) })
   }, [onProviderChanged])
 
   useEffect(load, [load])
@@ -183,9 +199,14 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
     if (!window.confirm(`删除供应商「${name}」？`)) return
     try {
       const r = await api.deleteProvider(name)
-      // 指向被删渠道的子代理模型由服务端级联回退「跟随主线」（见 DELETE /api/config/providers）——如实告知，不静默
+      // 指向被删渠道的子代理模型由服务端级联回退「跟随主线」、会诊模型由服务端级联移除
+      // （见 DELETE /api/config/providers）——两类如实告知，不静默
       const back = (r.reverted ?? []).map((k) => roleLabel(k) ?? k).join("、")
-      flash(back ? `已删除；子代理模型「${back}」已回退为跟随主线` : "已删除")
+      const dropped = (r.droppedConsult ?? []).join("、")
+      const notes = []
+      if (back) notes.push(`子代理模型「${back}」已回退为跟随主线`)
+      if (dropped) notes.push(`会诊模型「${dropped}」已一并移除`)
+      flash(notes.length ? `已删除；${notes.join("；")}` : "已删除")
       load()
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
@@ -246,9 +267,63 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
     }
   }
 
-  // ---- 模型清单拉取（供应商行「模型」下拉与子代理二级菜单共用；结果缓存，已拉过不发请求） ----
+  // ---- 会诊模型（即选即存：整表提交） ----
+  /** 提交整张清单（服务端 PUT 是「数组 = 全量写入」），成功即用回显重建本地清单。
+   *  **档位（effort）不随请求发出**：设置页没有档位控件（用户裁定 2026-09-26：会诊区块不配思考
+   *  深度）——那它凭什么写这个字段？服务端 `mergeConsultEffort`（`server/routes.mjs`）按
+   *  「同 `provider:model` 沿用磁盘档位、新条目不带」补齐 ⇒ **同模型重选保住档位、换模型丢掉**
+   *  （档位是模型特定的，带过去正是坑 91 的静默丢弃陷阱）。
+   *  关键是那个效据源：它取自**写盘时刚新鲜读到的磁盘值**，而不是本页打开时的快照 ⇒ 别处
+   *  （CLI `/config → consult/escalate pool menu`、另一个标签页、终端手改 config）改过的档位
+   *  不会被本页静默写回。早先版本在这里「照抄本地快照的 effort」，那个跨进程窗口已关。 */
+  const saveConsult = async (next: ConsultModelEntry[], note?: string) => {
+    setBusy(true)
+    setErr(null)
+    try {
+      const r = await api.putConsultModels({
+        // **不发 effort**（见上方注释：本页不持有档位意图，档位由服务端按磁盘对齐）
+        models: next.map((m) => ({ provider: m.provider, model: m.model })),
+      })
+      setConsult({ models: r.models, max: r.max })
+      flash(note || "已保存，从下一次对话回合起生效")
+      return true
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const removeConsultRow = (i: number) => saveConsult((consult?.models ?? []).filter((_, idx) => idx !== i), "已移除该会诊模型")
+
+  /** 点选某个模型（二级菜单的最末一层）= **唯一落盘入口**：`slot < 0` 追加，否则替换该行。
+   *  本页**不决定也不携带档位**（没有控件就没有意图）：只声明 provider + model，档位由服务端按
+   *  磁盘上同款条目的值补齐——见 `saveConsult` 上方注释。本地构造的条目 effort 一律 `null`，
+   *  落盘后由响应回显拉正（列表本身就是服务端状态的镜像）。 */
+  const pickConsultModel = (slot: number, provider: string, model: string) => {
+    setConsultMenu(null)
+    setConsultExpand(null)
+    // 读失败态下 `list` 只可能是空（consult 停在 null）——此时落盘 = 用空清单覆盖磁盘上的真实条目。
+    // 渲染层已把草稿行/菜单收掉（见 `!consultErr` 两处），这是第二道闸：防「失败态在菜单打开
+    // 之后才翻转」的那条缝（load() 的 catch 会收菜单，但状态更新与点击可能在同一帧里交错）。
+    if (consultErr) return Promise.resolve(false)
+    const list = consult?.models ?? []
+    const next =
+      slot < 0
+        ? [...list, { provider, model, effort: null, efforts: [] }]
+        : list.map((m, i) => (i === slot ? { provider, model, effort: null, efforts: [] } : m))
+    return saveConsult(next, slot < 0 ? "已添加会诊模型" : "已更新会诊模型")
+  }
+
+  // ---- 模型清单拉取（供应商行「模型」下拉 / 子代理二级菜单 / 会诊行二级菜单共用；成功结果缓存，
+  //      不重复发请求。**失败不当缓存**（用户裁定 2026-09-26）：只有 ok 的结果算「已拉过」——否则
+  //      一次瞬时失败会让该渠道**到刷新页面为止**都选不了模型（菜单形态没有重拉按钮，展开即自动重试
+  //      是唯一退路）。调用点全在事件处理器里，无 effect 依赖 ⇒ 不会成重拉循环。
+  //      不设「忽略缓存重拉」参数：三处调用点都只要「没拉过就拉」——真要重拉时再加，别留死参。） ----
   const ensureModels = async (name: string) => {
-    if (modelsCache[name] || loadingOpen.has(name)) return
+    const cached = modelsCache[name]
+    if (loadingOpen.has(name) || (cached && cached.ok)) return
     setLoadingOpen((s) => new Set(s).add(name))
     try {
       const r = await api.testProvider(name)
@@ -300,6 +375,112 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
+  }
+
+  const consultModels = consult?.models ?? []
+  const consultMax = consult?.max ?? 5
+  // 「＋ 添加模型」那一行（菜单行号 -1）只是菜单的锚点，不是清单里的条目 —— 是否已达上限只看已保存条数
+  const consultFull = consultModels.length >= consultMax
+
+  /** 一行会诊模型的控件（已保存行与「＋ 添加模型」行共用；作为**函数调用**内联而不是组件——
+   *  包成组件会因组件标识每次渲染都变而整棵重挂载，菜单滚动位置会当场丢失）。
+   *  `slot`：已保存行 = 下标；-1 = 「＋ 添加模型」行。
+   *  与「子代理模型」区块同款二级菜单（一级渠道 → 二级模型清单、点选即落盘），三处**有意的差别**：
+   *  ⓵ 无「跟随主线」（会诊每条必须指向具体模型，没有继承语义）；⓶ 无思考档位控件（不提供配置入口；
+   *  已存在的 effort 原样保留，见 saveConsult）；⓷ 无手输兜底与「重新拉取」按钮（用户裁定
+   *  2026-09-26：清单拉不到时该渠道在菜单里就是选不了——与子代理区块同一取舍；拉取失败**不当缓存**，
+   *  重新展开即自动重试，失败行里也写明这句退路）。 */
+  const renderConsultRow = (o: { key: string; slot: number; provider: string; model: string }) => {
+    const menuOpen = consultMenu === o.slot
+    const current = o.provider && o.model ? `${o.provider}:${o.model}` : null
+    return (
+      <div key={o.key} className="flex flex-wrap items-center gap-2">
+        <span className="w-4 shrink-0 text-xs tabular-nums text-t4">{o.slot < 0 ? "＋" : o.slot + 1}</span>
+        <div className="relative min-w-0 max-w-xs flex-1">
+          <button
+            onClick={() => {
+              setConsultExpand(null)
+              setConsultMenu(menuOpen ? null : o.slot)
+            }}
+            disabled={busy}
+            className="field flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-xs"
+          >
+            <FloatingTooltip label={current ?? undefined} className="min-w-0">
+              <span className={`block w-full truncate ${current ? "font-mono" : "text-t3"}`}>{current ?? "选择模型"}</span>
+            </FloatingTooltip>
+            <span className="shrink-0 text-t4">▾</span>
+          </button>
+          {menuOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => { setConsultMenu(null); setConsultExpand(null) }} />
+              <div className="absolute left-0 top-full z-50 mt-1.5 max-h-72 w-64 overflow-y-auto rounded-xl border border-line bg-surface shadow-lg">
+                <div className="sticky top-0 border-b border-line bg-surface px-3.5 py-2 text-xs text-t4">选择渠道 → 模型</div>
+                {cfg?.providers.map((pv) => {
+                  const expanded = consultExpand === `${o.slot}:${pv.name}`
+                  const picked = Boolean(current?.startsWith(`${pv.name}:`))
+                  // 渠道行右侧展示（纯显示派生，零刷新机制）：本行当前所选就在该渠道 → 显示所选模型；
+                  // 否则显示该渠道的默认模型
+                  const rowModel = picked ? (current ?? "").slice(pv.name.length + 1) : pv.model
+                  return (
+                    <div key={pv.name} className="border-t border-line/60 first:border-t-0">
+                      <button
+                        onClick={async () => {
+                          if (expanded) { setConsultExpand(null); return }
+                          setConsultExpand(`${o.slot}:${pv.name}`)
+                          await ensureModels(pv.name) // 共享缓存；失败不当缓存 ⇒ 再次展开即重试
+                        }}
+                        className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-xs transition-colors hover:bg-hover ${picked ? "text-accent" : "text-t2"}`}
+                      >
+                        <span className={`w-3.5 shrink-0 ${picked ? "" : "invisible"}`}>✓</span>
+                        <span className="shrink-0 font-medium">{pv.name}</span>
+                        <FloatingTooltip label={rowModel} className="min-w-0"><span className="block w-full truncate font-mono text-t4">{rowModel}</span></FloatingTooltip>
+                        <span className="ml-auto shrink-0 text-t4">{expanded ? "▾" : "▸"}</span>
+                      </button>
+                      {expanded && (
+                        <div className="bg-surface2/40 pb-1">
+                          {loadingOpen.has(pv.name) && (
+                            <div className="px-3.5 py-1.5 pl-9 text-xs text-t4">拉取模型清单中…</div>
+                          )}
+                          {modelsCache[pv.name] && !modelsCache[pv.name].ok && !loadingOpen.has(pv.name) && (
+                            <div className="px-3.5 py-1.5 pl-9 text-xs text-red-300">
+                              拉取失败：{modelsCache[pv.name].reason ?? modelsCache[pv.name].error}——重新展开即重试
+                            </div>
+                          )}
+                          {modelsCache[pv.name]?.list?.map((m) => (
+                            <button
+                              key={m}
+                              onClick={() => void pickConsultModel(o.slot, pv.name, m)}
+                              className={`flex w-full items-center gap-2 py-1.5 pl-9 pr-3.5 text-left text-xs transition-colors hover:bg-hover ${current === `${pv.name}:${m}` ? "text-accent" : "text-t2"}`}
+                            >
+                              <span className={`w-3.5 shrink-0 ${current === `${pv.name}:${m}` ? "" : "invisible"}`}>✓</span>
+                              <FloatingTooltip label={m} className="min-w-0"><span className="block w-full truncate font-mono">{m}</span></FloatingTooltip>
+                            </button>
+                          ))}
+                          {modelsCache[pv.name]?.ok && modelsCache[pv.name].list?.length === 0 && (
+                            <div className="px-3.5 py-1.5 pl-9 text-xs text-t4">清单为空</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </div>
+        {/* 菜单开着时铺了一层 `fixed inset-0 z-40` 的点闭合膜；本行 ✕ 必须抬到它之上，
+            否则首击被当成「点了别处」（只关菜单、不删行）——得点两下才删得掉。 */}
+        {o.slot >= 0 && (
+          <button
+            onClick={() => removeConsultRow(o.slot)}
+            disabled={busy}
+            className={`ml-auto shrink-0 rounded-lg px-2 py-1.5 text-xs text-t3 transition-colors hover:bg-hover hover:text-red-300${menuOpen ? " relative z-50" : ""}`}
+          >
+            ✕
+          </button>
+        )}
+      </div>
+    )
   }
 
   return (
@@ -355,9 +536,13 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
                       激活
                     </span>
                   )}
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-t4">
-                    {p.model} · {p.baseURL}
-                  </span>
+                  {/* 摘要串会先被截断（渠道模型名普遍很长），而 baseURL 不是用户要读的东西
+                      （用户裁定 2026-09-27：baseURL 不需要显示）⇒ 浮层只给**完整模型名**。 */}
+                  <FloatingTooltip label={p.model} className="min-w-0 flex-1">
+                    <span className="block w-full truncate font-mono text-xs text-t4">
+                      {p.model} · {p.baseURL}
+                    </span>
+                  </FloatingTooltip>
                   <span className={`shrink-0 text-xs ${p.hasKey ? "text-emerald-400" : "text-red-400"}`}>
                     {p.hasKey ? `key ····${p.keyTail}` : "无 key"}
                   </span>
@@ -385,7 +570,7 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
                             <span className="ml-auto shrink-0 text-t4">当前</span>
                           </button>
                           {loadingOpen.has(p.name) && <div className="px-3.5 py-2 text-xs text-t4">拉取模型清单中…</div>}
-                          {modelsCache[p.name] && !modelsCache[p.name].ok && (
+                          {modelsCache[p.name] && !modelsCache[p.name].ok && !loadingOpen.has(p.name) && (
                             <div className="px-3.5 py-2 text-xs text-red-300">{modelsCache[p.name].reason ?? "无法拉取清单"}</div>
                           )}
                           {modelsCache[p.name]?.list
@@ -397,7 +582,7 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
                                 className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-xs transition-colors hover:bg-hover ${cfg.activeProvider === p.name && cfg.activeModel === m ? "text-accent" : "text-t2"}`}
                               >
                                 <span className={`w-3.5 shrink-0 ${cfg.activeProvider === p.name && cfg.activeModel === m ? "" : "invisible"}`}>✓</span>
-                                <span className="min-w-0 truncate font-mono">{m}</span>
+                                <FloatingTooltip label={m} className="min-w-0"><span className="block w-full truncate font-mono">{m}</span></FloatingTooltip>
                               </button>
                             ))}
                           {modelsCache[p.name]?.list && modelsCache[p.name].list!.filter((m) => m !== p.model).length === 0 && (
@@ -514,7 +699,9 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
                       disabled={busy}
                       className="field flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-xs"
                     >
-                      <span className={`min-w-0 truncate ${current ? "font-mono" : "text-t3"}`}>{current ?? "跟随主线"}</span>
+                      <FloatingTooltip label={current ?? undefined} className="min-w-0">
+                        <span className={`block w-full truncate ${current ? "font-mono" : "text-t3"}`}>{current ?? "跟随主线"}</span>
+                      </FloatingTooltip>
                       <span className="shrink-0 text-t4">▾</span>
                     </button>
                     {menuOpen && (
@@ -546,7 +733,7 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
                                 >
                                   <span className={`w-3.5 shrink-0 ${current?.startsWith(`${pv.name}:`) ? "" : "invisible"}`}>✓</span>
                                   <span className="shrink-0 font-medium">{pv.name}</span>
-                                  <span className="min-w-0 truncate font-mono text-t4">{rowModel}</span>
+                                  <FloatingTooltip label={rowModel} className="min-w-0"><span className="block w-full truncate font-mono text-t4">{rowModel}</span></FloatingTooltip>
                                   <span className="ml-auto shrink-0 text-t4">{expanded ? "▾" : "▸"}</span>
                                 </button>
                                 {expanded && (
@@ -554,7 +741,7 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
                                     {loadingOpen.has(pv.name) && (
                                       <div className="px-3.5 py-1.5 pl-9 text-xs text-t4">拉取模型清单中…</div>
                                     )}
-                                    {modelsCache[pv.name] && !modelsCache[pv.name].ok && (
+                                    {modelsCache[pv.name] && !modelsCache[pv.name].ok && !loadingOpen.has(pv.name) && (
                                       <div className="px-3.5 py-1.5 pl-9 text-xs text-red-300">拉取失败：{modelsCache[pv.name].error}</div>
                                     )}
                                     {modelsCache[pv.name]?.list?.map((m) => (
@@ -564,7 +751,7 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
                                         className={`flex w-full items-center gap-2 py-1.5 pl-9 pr-3.5 text-left text-xs transition-colors hover:bg-hover ${current === `${pv.name}:${m}` ? "text-accent" : "text-t2"}`}
                                       >
                                         <span className={`w-3.5 shrink-0 ${current === `${pv.name}:${m}` ? "" : "invisible"}`}>✓</span>
-                                        <span className="min-w-0 truncate font-mono">{m}</span>
+                                        <FloatingTooltip label={m} className="min-w-0"><span className="block w-full truncate font-mono">{m}</span></FloatingTooltip>
                                       </button>
                                     ))}
                                     {modelsCache[pv.name]?.ok && modelsCache[pv.name].list?.length === 0 && (
@@ -582,6 +769,52 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
                 </div>
               )
             })}
+          </div>
+        )}
+      </div>
+
+      {/* ================= 会诊模型 ================= */}
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-medium text-t1">会诊模型</h2>
+          <p className="mt-0.5 text-xs text-t4">
+            模型卡壳时，或你输入「会诊」时，几个模型顾问会同时独立分析同一问题，结论自动回到对话。
+          </p>
+        </div>
+        <button
+          onClick={() => {
+            setConsultExpand(null)
+            setConsultMenu(consultMenu === -1 ? null : -1)
+          }}
+          disabled={busy || consultFull || !cfg || cfg.providers.length === 0 || consultErr}
+          className="btn-primary shrink-0 px-3.5 py-1.5 text-xs disabled:opacity-40"
+        >
+          ＋ 添加模型
+        </button>
+      </div>
+      <div className="mb-7 rounded-xl border border-line bg-surface px-4 py-3.5">
+        {cfg && cfg.providers.length === 0 ? (
+          <div className="text-xs text-t4">先在上方「模型供应商」配置渠道，才能配置会诊模型。</div>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {consultErr && (
+              <div className="text-xs text-red-300">
+                会诊模型清单读取失败——刷新页面重试；在此之前不会写入，以免覆盖已有条目。
+              </div>
+            )}
+            {!consultErr && consultModels.length === 0 && consultMenu !== -1 && (
+              <div className="text-xs text-t4">尚未配置——配置 1 个即可启用，配置 2 个以上才能互相印证。</div>
+            )}
+            {consultModels.map((row, i) =>
+              renderConsultRow({ key: `row-${i}`, slot: i, provider: row.provider, model: row.model }),
+            )}
+            {/* 「＋ 添加模型」那一行：只是给菜单一个锚点，点选模型后立即追加（固定 key，不与已有行冲突） */}
+            {!consultErr && consultMenu === -1 && renderConsultRow({ key: "draft", slot: -1, provider: "", model: "" })}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-line/60 pt-2.5 text-xs text-t4">
+              <span>{consultErr ? "清单未读到" : `已配置 ${consultModels.length} / ${consultMax}`}</span>
+              {consultFull && !consultErr && <span className="text-amber-400">已达上限——删除一个才能再加</span>}
+              <span className="ml-auto">改动从下一次对话回合起生效，运行中的不变 · Plan 模式下无法发起会诊</span>
+            </div>
           </div>
         )}
       </div>

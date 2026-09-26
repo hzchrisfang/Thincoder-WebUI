@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api, ApiError } from "./lib/api"
-import type { ApprovalMode, PendingApproval, PendingRequest, ProviderStatus, RewindSummary, RunEvent, ServerEvent, Snapshot, SubagentItem, SubagentReportEvent, SubagentStats, SubagentsUpdateEvent, SuspensionCounts, SuspensionEvent, ThinkingInfo, TimelineItem } from "./lib/types"
+import type { ApprovalMode, ConsultReportEvent, PendingApproval, PendingRequest, ProviderStatus, RewindSummary, RunEvent, ServerEvent, Snapshot, SubagentItem, SubagentReportEvent, SubagentStats, SubagentsUpdateEvent, SuspensionCounts, SuspensionEvent, ThinkingInfo, TimelineItem } from "./lib/types"
 import TopBar from "./components/TopBar"
 import Timeline from "./components/Timeline"
 import Composer from "./components/Composer"
@@ -419,6 +419,24 @@ export default function App() {
           ref: String(sr.ref ?? ""),
           status: sr.status === "error" ? "error" : "done",
           text: String(sr.text ?? ""),
+        })
+        break
+      }
+      case "consult_report": {
+        // 多模型会诊裁定进时间线（裁定的持久显示面；字段与 buildHistory 的 consult 条目同源——
+        // 服务端 subagents.consultPayload 一处拼出）。水合已把同一份预置进服务端投递集，不会重发
+        const cr = ev as unknown as ConsultReportEvent
+        pushItem({
+          kind: "consult",
+          id: uid(),
+          ref: String(cr.ref ?? ""),
+          status: cr.status === "error" ? "error" : cr.status === "partial" ? "partial" : "done",
+          counts: String(cr.counts ?? ""),
+          replied: cr.replied ?? null,
+          total: cr.total ?? null,
+          failed: cr.failed ?? null,
+          text: String(cr.text ?? ""),
+          sections: cr.sections ?? null,
         })
         break
       }
@@ -1096,6 +1114,7 @@ export default function App() {
                     <Timeline
                       items={items}
                       running={running}
+                      project={project}
                       onApprovePlan={approvePlan}
                       onAdjustPlan={adjustPlan}
                       onRollback={(it) => setRollback(it)}

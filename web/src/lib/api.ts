@@ -14,6 +14,7 @@ import type {
   Preset,
   ProviderStatus,
   ProvidersConfig,
+  ConsultModelsConfig,
   SubagentModelsConfig,
   RewindPoints,
   RewindPreview,
@@ -98,9 +99,11 @@ export const api = {
   providersConfig: () => request<ProvidersConfig>("/api/config/providers"),
   upsertProvider: (p: { name: string; baseURL: string; apiKey?: string; model: string }) =>
     request("/api/config/providers", { method: "PUT", body: JSON.stringify(p) }),
-  /** 删除供应商。返回 `reverted` = 因本次删除而被回退成「跟随主线」的子代理类型（explore/coder/advisor） */
+  /** 删除供应商。返回 `reverted` = 因本次删除而被回退成「跟随主线」的子代理类型（explore/coder/advisor）；
+   *  `droppedConsult` = 因本次删除而被**移除**的会诊模型引用（`provider:model`）——会诊条目没有继承
+   *  语义，只能移除；两者都是为了如实告知用户（不静默） */
   deleteProvider: (name: string) =>
-    request<{ ok: boolean; activeProvider?: string | null; reverted?: string[] }>("/api/config/providers", {
+    request<{ ok: boolean; activeProvider?: string | null; reverted?: string[]; droppedConsult?: string[] }>("/api/config/providers", {
       method: "DELETE",
       body: JSON.stringify({ name }),
     }),
@@ -129,6 +132,21 @@ export const api = {
     }),
   saveEmbedding: (apiKey: string) =>
     request("/api/config/embedding", { method: "PUT", body: JSON.stringify({ apiKey }) }),
+  /** 会诊模型（多模型并行独立分析同一问题）：GET 读清单（含每条模型可选 effort 档）；
+   *  PUT 部分补丁——`models` 数组 = 全量写入，`null` = 清除（会诊不可用）。 */
+  consultModels: () => request<ConsultModelsConfig>("/api/config/consult-models"),
+  putConsultModels: (patch: { models: { provider: string; model: string; effort?: string | null }[] | null }) =>
+    request<{ ok: boolean } & ConsultModelsConfig>("/api/config/consult-models", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
+  /** 停止一次仍在跑的会诊（内核 consult_stop）。未知/已结束的 id 服务端也 200 透传——
+   *  响应体带 `error: "unknown consult id"`，调用方按 error 提示，不靠状态码分流。 */
+  consultStop: (project: string, id: string) =>
+    request<{ abandoned?: number; cancelled?: boolean; error?: string }>("/api/consult/stop", {
+      method: "POST",
+      body: JSON.stringify({ project, id }),
+    }),
   usage: (days: number) => request<UsageStats>(`/api/usage?days=${days}`),
   gitStatus: (project: string) => request<GitStatus>(`/api/git/status?project=${encodeURIComponent(project)}`),
   gitLog: (project: string) =>

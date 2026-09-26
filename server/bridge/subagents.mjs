@@ -105,6 +105,21 @@ const REPORT_RES = [
 ]
 const REPORT_PREFIX = "[System reminder: async "
 
+/** 会诊裁定提醒（内核 consult.mjs composeConsultDigest 的固定形态）——injectConsultResult 把它
+ *  以 **user 角色**消息注入父 history：
+ *    `[System reminder: consultation #<id> finished — N of M models replied (K failed)]`
+ *    后跟逐模型一行：`- [provider:model]: <正文>`（失败行 = `- [provider:model] (failed): <错误>`）。
+ *  首行是模板拼出的（id/计数/`—` 全是内核字面量，escapeXml 不动 ASCII 方括号与 `#`），可作解析锚点；
+ *  `—` 用 \u2014 显式写出，免字面量漂移（同 REPORT_RES 的 escalate 破折号口径）。
+ *  >64K 的裁定会被内核 offload 成「预览 + 路径」，正文不再是逐模型逐行 ⇒ 小节解析落空，
+ *  此时整段展示（解析「尽力而为」，绝不猜）。 */
+const CONSULT_PREFIX = "[System reminder: consultation #"
+const CONSULT_RE = /^\[System reminder: consultation #(\d+) finished \u2014 ([^\]\n]*)\]\n?([\s\S]*)$/
+/** 计数行（内核 composeConsultDigest 的模板 `${replies.length} of ${session.total} models replied (${session.failed} failed)`）。 */
+const CONSULT_COUNTS_RE = /^(\d+) of (\d+) models replied \((\d+) failed\)$/
+/** 逐模型小节行（正文按 escapeXml 后切分——`-`/`[`/`]`/`:` 都不在转义面内）。 */
+const CONSULT_SECTION_RE = /^- \[([^\]]+)\]( \(failed\))?: ([\s\S]*)$/
+
 /** 内核 provider 层抛错的**开头形态封闭集**（LLM API 调用失败：4xx/5xx/网络等）。
  *  内核对「异步普通子代理失败」不发独立标记——回执仍用 finished 措辞、错误文本作为报告正文
  *  （P10 实测：错误态唯一独立通道是 escalate 飞刀），面板因此假绿（✓ 已完成但任务实际失败，
@@ -593,10 +608,13 @@ export function routeToolOutput(project, name, chunk) {
 // ================= 最终报告（异步子代理） =================
 
 /**
- * 扫 agent.history 里的异步子代理报告提醒（内核把报告作为 user 消息注入父 history）：
- * ⓵ 把正文挂到**已存在**的面板行（行不存在则跳过——不建行、不计派发，见 attachReport）；
- * ⓶ 把**首次见到**的报告作 `subagent_report` 投递给会话时间线（报告的持久显示面）。
- * 幂等：同一份报告（ref + 正文）不重复投递、同一行同正文不重复写、不重复广播。整段失败静默。
+ * 扫 agent.history 里的**注入式提醒**（内核把结果作为 user 消息注入父 history）——两类，同一次回扫：
+ * ⓵ 异步子代理报告：把正文挂到**已存在**的面板行（行不存在则跳过——不建行、不计派发，见 attachReport）；
+ * ⓶ 多模型会诊裁定（`parseConsultMessage`）：只进时间线（会诊没有「面板行」这一消费面，面板行由
+ *    relay 前缀 `consult#<childN>/` 另建，路由行为不动）。
+ * 两类都把**首次见到**的提醒投递给会话时间线（报告的持久显示面）：子代理走 `subagent_report`、
+ * 会诊走 `consult_report`，按历史顺序（新→旧回扫后倒回来）投递，客户端据此顺序 append。
+ * 幂等：同一份（ref + 正文）不重复投递、同一行同正文不重复写、不重复广播。整段失败静默。
  */
 export function syncReports(project, agent) {
   try {
@@ -604,22 +622,30 @@ export function syncReports(project, agent) {
     if (!history?.length) return
     const from = Math.max(0, history.length - HISTORY_SCAN_LIMIT)
     let changed = false
-    const fresh = [] // 首次见到的报告（待投递给时间线）
+    const fresh = [] // 首次见到的提醒（待投递给时间线）——带类型，两类混排保持历史顺序
     const newest = new Map() // key -> hit：**同 key 只留最新的一份**（回扫序新→旧，首次命中即最新）
     for (let i = history.length - 1; i >= from; i--) {
       const m = history[i]
       if (m?.role !== "user" || typeof m.content !== "string") continue
+      if (m.content.startsWith(CONSULT_PREFIX)) {
+        const c = parseConsultMessage(m.content)
+        if (c && markReportDelivered(project, `consult#${c.id}`, c.body)) fresh.push({ kind: "consult", hit: c })
+        continue
+      }
       if (!m.content.startsWith(REPORT_PREFIX)) continue
       const hit = parseReportMessage(m.content)
       if (!hit) continue
       const key = `${hit.role}#${hit.id}`
       if (!newest.has(key)) newest.set(key, hit) // 新→旧回扫：首次命中 = 该 key 在历史里最新的报告
-      if (markReportDelivered(project, key, hit.body)) fresh.push(hit)
+      if (markReportDelivered(project, key, hit.body)) fresh.push({ kind: "report", hit })
     }
     // 面板挂行只取「每 key 最新那份」（见 attachReport 注：旧报告不得覆盖新报告）
     for (const hit of newest.values()) if (attachReport(project, hit)) changed = true
     // 上面的回扫是「新→旧」；倒回来按历史顺序投递——客户端据此顺序 append，时间线才不乱序
-    for (const hit of fresh.reverse()) emitReport(project, hit)
+    for (const f of fresh.reverse()) {
+      if (f.kind === "report") emitReport(project, f.hit)
+      else emitConsultReport(project, f.hit)
+    }
     if (changed) flush(project)
   } catch { /* 报告同步失败无碍运行收尾 */ }
 }
@@ -646,6 +672,14 @@ function emitReport(project, hit) {
   } catch { /* 投递失败不阻塞收尾 */ }
 }
 
+/** 会诊裁定 → 时间线的实时投递（客户端 pushItem；字段与 buildHistory 的 consult 条目同源，
+ *  见 consultPayload）。正文整段不截断（时间线是裁定的持久载体）；广播失败静默，同 emitReport。 */
+function emitConsultReport(project, hit) {
+  try {
+    bus.emit({ type: "consult_report", project, ...consultPayload(hit) })
+  } catch { /* 投递失败不阻塞收尾 */ }
+}
+
 /** 报告提醒解析（单一权威——buildHistory 与 syncReports 共用，绝不另写第二套正则）。
  *  返回 `{ id, role, status, body }`；body 仍是内核 escapeXml 后的原文，消费方各自 unescape。 */
 export function parseReportMessage(content) {
@@ -655,6 +689,69 @@ export function parseReportMessage(content) {
     return { id: m[1], role: p.role(m), status: p.status, body: m[m.length - 1] ?? "" }
   }
   return null
+}
+
+/** 会诊裁定提醒解析（单一权威——buildHistory 与 syncReports 共用，同 parseReportMessage 口径）。
+ *  返回 `{ id, countsText, replied, total, failed, status, body }`；body 仍是内核 escapeXml 后的
+ *  原文，消费方各自 unescape。非裁定提醒返回 null（**只认准首行模板**，不靠子串包含——正文里
+ *  讨论到这句话的报告不得被误判成裁定）。
+ *  status 由内核给的计数派生（done = 无失败 / partial = 部分失败 / error = 全失败）——裁定
+ *  正文本身不以 provider 错误开头（`- [m] (failed): LLM API error…` 在行内），故 reportStatus 的
+ *  开头形态判据在这里不适用，判据必须走计数（内核自己算的，不另造）。 */
+export function parseConsultMessage(content) {
+  if (typeof content !== "string" || !content.startsWith(CONSULT_PREFIX)) return null
+  const m = content.match(CONSULT_RE)
+  if (!m) return null
+  const countsText = m[2]
+  const c = countsText.match(CONSULT_COUNTS_RE)
+  const replied = c ? Number(c[1]) : null
+  const total = c ? Number(c[2]) : null
+  const failed = c ? Number(c[3]) : null
+  return {
+    id: m[1],
+    countsText,
+    replied,
+    total,
+    failed,
+    status: failed === null ? "done" : failed === 0 ? "done" : failed >= replied ? "error" : "partial",
+    body: m[3] ?? "",
+  }
+}
+
+/** 正文里可辨认的逐模型小节（按 escapeXml 后的原文切分，正文各段随后各自 unescape）。
+ *  认不出任何小节 → null（调用方整段展示，绝不猜模型名）。 */
+function splitConsultSections(body) {
+  const out = []
+  let cur = null
+  for (const line of String(body).split("\n")) {
+    const m = line.match(CONSULT_SECTION_RE)
+    if (m) {
+      cur = { model: m[1], failed: Boolean(m[2]), text: m[3] }
+      out.push(cur)
+    } else if (cur) {
+      cur.text += "\n" + line // 小节正文可能多行——续行归上一节
+    }
+  }
+  return out.length ? out : null
+}
+
+/** 裁定 → 投递/水合**共用字段**（单源：`consult_report` 的 SSE 负载与 buildHistory 的条目同形，
+ *  两处各拼一份必然漂移）。`sections` 为 null = 正文里没有可辨认的逐模型小节（如裁定被 offload
+ *  成预览）——前端整段展示。 */
+export function consultPayload(hit) {
+  const esc = splitConsultSections(hit.body)
+  return {
+    ref: `consult#${hit.id}`,
+    status: hit.status,
+    counts: hit.countsText,
+    replied: hit.replied,
+    total: hit.total,
+    failed: hit.failed,
+    text: unescapeXml(hit.body),
+    sections: esc
+      ? esc.map((s) => ({ model: unescapeXml(s.model), failed: s.failed, text: unescapeXml(s.text) }))
+      : null,
+  }
 }
 
 /**

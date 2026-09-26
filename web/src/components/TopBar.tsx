@@ -1,7 +1,7 @@
 import { useState } from "react"
 import type { ApprovalMode, ProviderStatus, SubagentItem, SubagentStats, ThinkingInfo } from "../lib/types"
 import { SUBAGENT_ROLES } from "../lib/subagentRoles"
-import Tooltip from "./Tooltip"
+import Tooltip, { FloatingTooltip } from "./Tooltip"
 
 interface Props {
   provider: ProviderStatus | null
@@ -175,21 +175,23 @@ export default function TopBar(p: Props) {
               {p.provider.providers.map((x) => {
                 const active = p.provider?.activeProvider === x.name
                 return (
-                  <Tooltip key={x.name} label={`${x.name} / ${x.model}`} side="right" className="w-full">
-                    <button
-                      onClick={() => {
-                        setProvMenu(false)
-                        if (!active) p.onSwitchProvider(x.name)
-                      }}
-                      className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-xs transition-colors hover:bg-hover ${
-                        active ? "text-accent" : "text-t2"
-                      }`}
-                    >
-                      <span className={`w-3.5 shrink-0 ${active ? "" : "invisible"}`}>✓</span>
-                      <span className="shrink-0 font-medium">{x.name}</span>
-                      <span className="min-w-0 truncate font-mono text-t4">{x.model}</span>
-                    </button>
-                  </Tooltip>
+                  <button
+                    key={x.name}
+                    onClick={() => {
+                      setProvMenu(false)
+                      if (!active) p.onSwitchProvider(x.name)
+                    }}
+                    className={`flex w-full items-center gap-2 px-3.5 py-2 text-left text-xs transition-colors hover:bg-hover ${
+                      active ? "text-accent" : "text-t2"
+                    }`}
+                  >
+                    <span className={`w-3.5 shrink-0 ${active ? "" : "invisible"}`}>✓</span>
+                    <span className="shrink-0 font-medium">{x.name}</span>
+                    {/* 模型名可长到被 ellipsis 截断，而菜单容器是 `overflow-hidden`：现役纯 CSS 浮层是行内 `absolute`
+                        子节点，落在容器之外 ⇒ 会被整块裁掉（看不见）。故改用 FloatingTooltip（fixed + 视口坐标）。
+                        渠道名是 `shrink-0` 恒完整可见，不需要提示。 */}
+                    <FloatingTooltip label={x.model} className="min-w-0"><span className="block w-full truncate font-mono text-t4">{x.model}</span></FloatingTooltip>
+                  </button>
                 )
               })}
               <button

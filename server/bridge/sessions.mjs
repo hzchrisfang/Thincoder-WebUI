@@ -143,8 +143,9 @@ export async function switchSession(project, slot) {
 /**
  * 从 agent.history 重建时间线（渲染用，非显示原文回放）。
  * 过滤：transient 消息与 [System reminder 注入；tool 结果按 tool_call_id 精确配对。
- * 例外：子代理报告提醒（`parseReportMessage` 命中）**进时间线**（kind: "report"，正文整段）——
- * 时间线是报告的持久载体；同时把该份报告预置进投递面（服务端 subagents），与实时投递去重。
+ * 例外：两类注入式提醒**进时间线**（正文整段）——⓵ 子代理报告提醒（`parseReportMessage` 命中）
+ * ⇒ `kind: "report"`；⓶ 多模型会诊裁定（`parseConsultMessage` 命中）⇒ `kind: "consult"`。
+ * 时间线是这两者的持久载体；同时把它们预置进投递面（服务端 subagents）与实时投递去重。
  */
 export async function buildHistory(project) {
   const { getAgent } = await import("./thincoder.mjs")
@@ -161,7 +162,7 @@ export async function buildHistory(project) {
     if (m.role === "user") {
       if (typeof m.content === "string") {
         if (m.content.startsWith(SYSTEM_REMINDER_PREFIX)) {
-          // 子代理报告提醒 → 时间线条目（报告的持久载体）：正文整段不截断；
+          // 子代理报告 / 会诊裁定提醒 → 时间线条目（两者的持久载体）：正文整段不截断；
           // 其余 [System reminder 注入（OS 上下文、记忆、outline…）照旧丢弃。
           const rep = subagents.parseReportMessage(m.content)
           if (rep) {
@@ -169,6 +170,14 @@ export async function buildHistory(project) {
             const ref = `${rep.role}#${rep.id}`
             subagents.markReportDelivered(project, ref, rep.body) // 水合已把它交给客户端：实时投递面不再重发
             items.push({ kind: "report", id: nid(), ref, status: subagents.reportStatus(rep.status, text), text })
+            continue
+          }
+          const con = subagents.parseConsultMessage(m.content)
+          if (con) {
+            // 字段与 SSE `consult_report` 同源（subagents.consultPayload）——两路一份渲染
+            subagents.markReportDelivered(project, `consult#${con.id}`, con.body)
+            items.push({ kind: "consult", id: nid(), ...subagents.consultPayload(con) })
+            continue
           }
           continue
         }

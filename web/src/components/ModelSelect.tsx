@@ -1,8 +1,12 @@
 import { useState } from "react"
+import { FloatingTooltip } from "./Tooltip"
 
 type Props = {
   value: string
   onChange: (v: string) => void
+  /** 点选清单候选时**额外**回调（在 onChange 之后）——给「即时落盘」的调用方一个与「逐字输入」
+   *  区分开的提交时机（输入过程不该每次按键都写盘）。不传 = 与原有行为完全一致。 */
+  onPick?: (v: string) => void
   /** 清单状态：null = 尚未拉取。失败时显示 `reason`（服务端映射的一句人话短句）——
    *  `error`（上游原始报文）不上界面，只留给 API 消费方与排查。 */
   list: { ok: boolean; list?: string[]; error?: string; reason?: string } | null
@@ -21,7 +25,7 @@ type Props = {
  * - 唯一的大小写不敏感处是候选**筛选**（输入词过滤显示哪些候选），它只影响「显示哪些候选」，
  *   不改变写入值——见下方 q / candidates。
  */
-export default function ModelSelect({ value, onChange, list, loading, onReload, placeholder }: Props) {
+export default function ModelSelect({ value, onChange, onPick, list, loading, onReload, placeholder }: Props) {
   const [open, setOpen] = useState(false)
   // 候选筛选词与字段值分开：**打开面板时恒空**（否则会按当前值把自己筛成唯一候选＝看不到其它模型），
   // 只有用户真敲了字才作为筛选词；取值仍走 onChange(原样文本)，两者互不污染。
@@ -93,10 +97,11 @@ export default function ModelSelect({ value, onChange, list, loading, onReload, 
                   e.preventDefault()
                   onChange(m)
                   setOpen(false)
+                  onPick?.(m)
                 }}
                 className="flex w-full items-center gap-2 px-3.5 py-2 text-left text-xs text-t2 transition-colors hover:bg-hover"
               >
-                <span className="min-w-0 truncate font-mono">{m}</span>
+                <FloatingTooltip label={m} className="min-w-0"><span className="block w-full truncate font-mono">{m}</span></FloatingTooltip>
               </button>
             ))}
             {!loading && candidates.length === 0 && (

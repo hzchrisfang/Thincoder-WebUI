@@ -19,6 +19,21 @@ export type TimelineItem =
   /** 子代理完成报告（内核注入 history 的报告提醒）——摘要可折叠，展开为正文原文（不截断）。
    *  ref = `role#id`；时间线是报告的持久载体（面板行的报告区只是活视图的一份副本）。 */
   | { kind: "report"; id: string; ref: string; status: "done" | "error"; text: string }
+  /** 多模型会诊裁定（内核注入 history 的裁定提醒）——摘要可折叠，展开为逐模型小节原文（不截断）。
+   *  ref = `consult#<id>`；status 由内核给的计数派生（无失败 / 部分失败 / 全失败）；
+   *  sections 为 null = 正文里没有可辨认的逐模型小节（如裁定被 offload 成预览）⇒ 整段展示。 */
+  | {
+      kind: "consult"
+      id: string
+      ref: string
+      status: "done" | "partial" | "error"
+      counts: string
+      replied: number | null
+      total: number | null
+      failed: number | null
+      text: string
+      sections: { model: string; failed: boolean; text: string }[] | null
+    }
   /** 一轮运行收尾：完成时间 + 该轮 token 消耗（实时流由 run_end 产出；历史重建从用量库按时间窗聚合）；digest=true 是自动消化轮 */
   | { kind: "runEnd"; id: string; ts: number; prompt: number; completion: number; digest?: boolean }
   | {
@@ -170,6 +185,20 @@ export interface SubagentReportEvent extends ServerEvent {
   ref?: string
   status?: "done" | "error"
   text?: string
+}
+
+/** 多模型会诊裁定 → 时间线的实时投递（字段与 buildHistory 的 consult 条目**同源**：服务端
+ *  subagents.consultPayload 一处拼出，两条路径共用一份渲染）。正文整段不截断。 */
+export interface ConsultReportEvent extends ServerEvent {
+  type: "consult_report"
+  ref?: string
+  status?: "done" | "partial" | "error"
+  counts?: string
+  replied?: number | null
+  total?: number | null
+  failed?: number | null
+  text?: string
+  sections?: { model: string; failed: boolean; text: string }[] | null
 }
 
 /** 后台池计数（挂起驱动的状态面）：运行中 / 排队 / 待消化 / 已完成 */
@@ -331,6 +360,22 @@ export interface SubagentModelsConfig {
   explore: string | null
   coder: string | null
   advisor: string | null
+}
+
+/** 一条会诊模型（内核 `agent.consultModels` 的条目）。`efforts` = 该模型 spec 声明的思考档位
+ *  枚举（经服务端 specForModel 派生）——空数组 = 该模型不接受 effort，前端不渲染档位下拉。 */
+export interface ConsultModelEntry {
+  provider: string
+  model: string
+  effort: string | null
+  efforts: string[]
+}
+
+/** 多模型会诊模型清单（内核 `agent.consultModels`）：1-5 条（内核只拒**空池**与 **>5**——1 条也能起单顾问会诊），空 = 未配置（会诊不可用）。
+ *  `max` = 条数上限（服务端与内核同值，前端据此禁增）。 */
+export interface ConsultModelsConfig {
+  models: ConsultModelEntry[]
+  max: number
 }
 
 // ---------- M4：定时任务 ----------

@@ -223,6 +223,10 @@ export async function loadThincoder() {
     relay: relayPrefix ? { parseRelayPath: relayPrefix.parseRelayPath, RELAY_PREFIX_RE: relayPrefix.RELAY_PREFIX_RE } : null,
     // 挂起会话驱动面（见上）：null = 旧内核不支持，runner 退回 headless 档
     suspension,
+    // 多模型会诊（内核 agent-tools/consult.mjs）：consult_stop 的**执行面**（consult_start
+    // 由 agent 自己调，WebUI 不代调）。可选导入语义同 relay：模块缺失（旧内核）→ null，
+    // 路由据此回明确错误，装配与其余功能不受影响。
+    consult: consultCore?.consultStopTool ? { stopTool: consultCore.consultStopTool } : null,
     // 薄壳 tui 目录按安装形态探测：本地平级（node_modules/thincoder）与全局内嵌
     // （thincoder/node_modules/@thincoder/core）两种布局都覆盖。斜线命令表与
     // 思考程度设置（thinkingSet 复用内核 cmd-think.mjs 的 applyThink）共用此探测。

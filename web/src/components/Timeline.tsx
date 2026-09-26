@@ -94,6 +94,7 @@ function CopyButton({ text, title = "复制", className = "" }: { text: string; 
 export default function Timeline({
   items,
   running,
+  project,
   suggests,
   onPickSuggest,
   onApprovePlan,
@@ -103,6 +104,8 @@ export default function Timeline({
 }: {
   items: TimelineItem[]
   running: boolean
+  /** 当前项目目录（工具卡里的「停止会诊」要带它调 API；null = 无项目） */
+  project: string | null
   suggests: string[]
   onPickSuggest: (text: string) => void
   onApprovePlan: () => void
@@ -220,7 +223,7 @@ export default function Timeline({
           }
 
           if (it.kind === "tool") {
-            return <ToolCard key={it.id} tool={it.tool} />
+            return <ToolCard key={it.id} tool={it.tool} project={project} />
           }
 
           if (it.kind === "plan") {
@@ -266,6 +269,57 @@ export default function Timeline({
                 </summary>
                 <div className="border-t border-line px-3.5 py-3">
                   <div className="select-text whitespace-pre-wrap break-words text-xs leading-relaxed text-t2">{it.text}</div>
+                </div>
+              </details>
+            )
+          }
+
+          if (it.kind === "consult") {
+            // 多模型会诊裁定（内核注入 history 的裁定提醒）：与子代理报告块同族——默认折叠，
+            // 展开即整段原文（不二次截断、可选中）；有逐模型小节时按小节分隔渲染（模型名 + 失败标记）。
+            // 状态与计数全部来自服务端（内核自己给的计数），前端不另算。
+            const dot =
+              it.status === "error" ? "bg-red-400" : it.status === "partial" ? "bg-amber-400" : "bg-emerald-400"
+            const label = it.status === "error" ? "全部失败" : it.status === "partial" ? "部分失败" : "已完成"
+            return (
+              <details
+                key={it.id}
+                className="rise group ml-9 overflow-hidden rounded-xl border border-line bg-surface2/70 text-xs transition-colors open:bg-surface"
+              >
+                <summary className="flex cursor-pointer select-none items-center gap-2.5 px-3.5 py-2.5">
+                  <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+                  <span className="shrink-0 text-xs text-t3">多模型会诊裁定 ·</span>
+                  <span className="shrink-0 font-mono text-xs font-medium text-accent">{it.ref}</span>
+                  <span className="min-w-0 flex-1" />
+                  <span className="shrink-0 text-xs text-t4">{it.counts}</span>
+                  <span className={`shrink-0 text-xs ${it.status === "done" ? "text-t4" : it.status === "partial" ? "text-amber-300" : "text-red-300"}`}>
+                    {label}
+                  </span>
+                  <span className="shrink-0 text-xs text-t4 transition-transform group-open:rotate-90">▸</span>
+                </summary>
+                <div className="border-t border-line px-3.5 py-3">
+                  {it.sections ? (
+                    <div className="flex flex-col gap-3.5">
+                      {it.sections.map((s, i) => (
+                        <div key={`${s.model}-${i}`} className="flex flex-col gap-1.5">
+                          <div className="flex items-center gap-2">
+                            <span
+                              aria-hidden="true"
+                              className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.failed ? "bg-red-400" : "bg-emerald-400"}`}
+                            />
+                            <span className="min-w-0 truncate font-mono text-xs font-medium text-accent">{s.model}</span>
+                            {s.failed && <span className="shrink-0 text-xs text-red-300">失败</span>}
+                          </div>
+                          <div className="select-text whitespace-pre-wrap break-words pl-3.5 text-xs leading-relaxed text-t2">
+                            {s.text}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    // 正文里认不出逐模型小节（如裁定被 offload 成预览）：整段展示，不猜模型名
+                    <div className="select-text whitespace-pre-wrap break-words text-xs leading-relaxed text-t2">{it.text}</div>
+                  )}
                 </div>
               </details>
             )
