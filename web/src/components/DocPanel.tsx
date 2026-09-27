@@ -123,9 +123,9 @@ export default function DocPanel({ project, files, onClose }: Props) {
   }, [rawUrl])
 
   return (
-    <aside className="flex w-[360px] shrink-0 flex-col border-l border-line bg-surface2">
+    <aside className="doc-print flex w-[360px] shrink-0 flex-col border-l border-line bg-surface2">
       {/* 头部 */}
-      <div className="flex h-14 shrink-0 items-center gap-2 border-b border-line px-3.5">
+      <div className="doc-print-hide flex h-14 shrink-0 items-center gap-2 border-b border-line px-3.5">
         <span className="text-xs font-semibold tracking-[-0.01em] text-t1">文档预览</span>
         {path && kind && <span className="rounded-full bg-surface3 px-2 py-0.5 text-[11px] text-t4">{KIND_LABEL[kind]}</span>}
         <div className="flex-1" />
@@ -142,6 +142,30 @@ export default function DocPanel({ project, files, onClose }: Props) {
             </svg>
           </button>
         </Tooltip>
+        {/* 打印：Chrome/Safari「存储为 PDF」的默认文件名取 document.title，故打印期间临时把它
+            换成文件名，一次性 afterprint 复原（全库无其它地方写 document.title，不会打架）。
+            只给 Markdown 与代码文本入口——图片/网页不打印；也**故意不接管 Cmd+P**，
+            直接按 Cmd+P 走浏览器原生行为（打印样式对面板开着的情况同样生效）。 */}
+        {path && (kind === "md" || kind === "code") && (
+          <Tooltip label="打印" side="left">
+            <button
+              onClick={() => {
+                const prev = document.title
+                document.title = baseName(path)
+                window.addEventListener("afterprint", () => { document.title = prev }, { once: true })
+                window.print()
+              }}
+              disabled={loading || !!err}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-t3 transition-colors hover:bg-hover hover:text-t1 disabled:opacity-40"
+            >
+              <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 6.5V2.5h6v4" />
+                <rect x="2.5" y="6.5" width="11" height="5" rx="1" />
+                <rect x="5" y="9.5" width="6" height="4" rx="0.5" />
+              </svg>
+            </button>
+          </Tooltip>
+        )}
         <Tooltip label="收起面板" side="left">
           <button
             onClick={onClose}
@@ -156,7 +180,7 @@ export default function DocPanel({ project, files, onClose }: Props) {
 
       {/* 文件选择器 */}
       {showPicker && uniq.length > 0 && (
-        <div className="max-h-56 shrink-0 overflow-y-auto border-b border-line bg-surface px-2 py-1.5">
+        <div className="doc-print-hide max-h-56 shrink-0 overflow-y-auto border-b border-line bg-surface px-2 py-1.5">
           {uniq
             .slice()
             .reverse()
@@ -213,7 +237,7 @@ export default function DocPanel({ project, files, onClose }: Props) {
 
             {/* Markdown：渲染阅读视图 */}
             {kind === "md" && !loading && !err && (
-              <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="doc-print-body min-h-0 flex-1 overflow-y-auto">
                 <div className="md px-4 py-4 text-t-body" dangerouslySetInnerHTML={{ __html: html }} />
               </div>
             )}

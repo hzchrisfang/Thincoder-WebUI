@@ -648,3 +648,148 @@ body {
 .rise {
   animation: rise 0.22s ease-out both;
 }
+
+/* ============================================================
+   打印：右侧「文档预览」面板（Markdown / 代码文本）
+   —— 用户按 Cmd/Ctrl+P（或面板头部的打印按钮）时，把纸面让给预览内容本身。
+
+   门控：每条改写壳层的规则都带 `:has(.doc-print)`——面板没开时整块不匹配，
+   维持浏览器原生打印行为，绝不打印出一张空白纸。
+   **带 `:has()` 的规则与不带 `:has()` 的规则分块书写**：选择器列表里混进一个不成立的选择器
+   会让整条规则作废，不给 `:has()` 的兼容性牵连其它规则的机会。
+   降级：浏览器不支持 `:has()` 时这些门控规则整块失效 ⇒ 退回「打印整个界面」的今天行为
+   （不是白页）；页面内部排版由下面按 `.doc-print` 限域的规则照常生效。
+
+   与面板的关系一律用 `:has()` 表达，**不写任何依赖嵌套深度的子代链**——面板挂在 `.app-shell`
+   内的第几层由 App.tsx 的并排容器决定，写死深度会在布局调整时静默失效（本次实施前就赌错过一次）。
+   ============================================================ */
+@media print {
+  @page {
+    margin: 14mm 12mm;
+  }
+
+  /* ---------- 壳层：固定高度 / 溢出逐层放开（门控） ---------- */
+  html:has(.doc-print) {
+    height: auto;
+    overflow: visible;
+    background: #fff;
+    color-scheme: light;
+  }
+  body:has(.doc-print) {
+    height: auto;
+    overflow: visible;
+    background: #fff;
+  }
+  body:has(.doc-print) #root {
+    height: auto;
+    overflow: visible;
+  }
+  /* 根壳（App.tsx 的 h-full overflow-x-hidden）：高度与溢出放开，内容才能跨页 */
+
+  body:has(.doc-print) .app-shell {
+    display: block;
+    height: auto;
+    overflow: visible;
+  }
+
+  /* ---------- (a) 与面板无关的一切：不进纸面（不依赖深度） ----------
+     匹配集合 = `.app-shell` 的后代里「不含面板 ∧ 不是面板 ∧ 不在面板内」的元素：
+     导航栏 / 历史栏 / 顶栏 / 时间线 / 输入框 / 配置面板 / 任务与子代理面板全在内。 */
+  body:has(.doc-print) .app-shell *:not(:has(.doc-print)):not(.doc-print):not(.doc-print *) {
+    display: none;
+  }
+
+  /* ---------- (b) 面板的祖先链：逐层放开高度与裁剪（不依赖深度） ----------
+     匹配集合是「包含面板」的元素，与 (a) 互斥，两者不会互相打架。 */
+  body:has(.doc-print) .app-shell :has(.doc-print) {
+    display: block;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  /* ---------- 面板自身：占满纸面宽度、去屏幕边框与底色 ---------- */
+  body:has(.doc-print) .doc-print {
+    display: block;
+    width: auto;
+    border-left: 0;
+    background: #fff;
+  }
+  /* 面板的非隐藏子块（含 :188 那个 overflow-hidden 的内容包裹层）逐层放开；
+     `:not(.doc-print-hide)` 让头部与文件选择器不进这一条——否则这里的 display:block
+     会把它们从「隐藏」里翻出来。路径条（:199）故意不隐藏：打印稿要留下「这是哪个文件」。 */
+  body:has(.doc-print) .doc-print > *:not(.doc-print-hide) {
+    display: block;
+    width: auto;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+  /* 面板内的屏幕交互件（头部 / 文件选择器）：纸面不要 */
+  body:has(.doc-print) .doc-print-hide {
+    display: none;
+  }
+  /* Markdown 滚动容器（:216）：解开高度与溢出约束，整篇排出、可跨页 */
+  body:has(.doc-print) .doc-print .doc-print-body {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  /* ---------- 纸面强制浅色：面板内重声明一套浅色令牌（照 :root） ----------
+     深色主题下 `html.dark` 把令牌刷成深色底浅色字，纸面必须反过来。 */
+  .doc-print {
+    --bg: #faf9f5;
+    --bg-nav: #f0eee6;
+    --surface: #ffffff;
+    --surface-2: #f5f4ef;
+    --surface-3: #efede5;
+    --t-body: #2c2b26;
+    --t1: #1f1e1b;
+    --t2: #3b3a34;
+    --t3: #6b6961;
+    --t4: #94908a;
+    --line: #e7e4da;
+    --line-2: #d6d2c6;
+    --hover: #ebe8df;
+    --link: #a8503a; /* .md a 的链接色：深色的浅珊瑚在纸上对比度不足 */
+    --code-bg: #f2f0e9;
+    --code-line: #e2dfd4;
+    --pre-bg: #f4f2ec;
+    --pre-line: #e3e0d6;
+    --table-head: #f5f4ef;
+    --table-line: #e7e4da;
+    --accent: #c96442;
+  }
+
+  /* ---------- 纸面可读性 ---------- */
+  .doc-print .md {
+    font-size: 10.5pt;
+    line-height: 1.62;
+  }
+  .doc-print .md h1,
+  .doc-print .md h2,
+  .doc-print .md h3,
+  .doc-print .md h4 {
+    break-after: avoid; /* 标题不留在页尾当孤行 */
+    page-break-after: avoid;
+  }
+
+  /* ---------- 超长行 / 宽表不裁到纸外 ---------- */
+  /* 面板内只有两处 <pre>：Markdown 的代码块与代码文本视图（:227），一并折行 */
+  .doc-print pre {
+    font-size: 10.5pt;
+    white-space: pre-wrap;
+    overflow: visible;
+    overflow-wrap: anywhere;
+  }
+  .doc-print .md table {
+    display: table; /* 覆盖屏幕端的 display:block：纸上没有横向滚动条，溢出就是被裁掉 */
+    width: 100%;
+  }
+
+  /* ---------- 去屏幕交互残留 ---------- */
+  .doc-print .md-copy-btn {
+    display: none;
+  }
+}

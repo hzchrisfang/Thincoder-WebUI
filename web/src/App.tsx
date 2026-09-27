@@ -986,7 +986,7 @@ export default function App() {
   const occupied = running || suspended
 
   return (
-    <div className="flex h-full overflow-x-hidden">
+    <div className="app-shell flex h-full overflow-x-hidden">
       <NavRail
         view={view}
         onChange={(v) => {
