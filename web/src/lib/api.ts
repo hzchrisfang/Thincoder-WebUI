@@ -20,6 +20,13 @@ import type {
   RewindPreview,
   RewindSummary,
   SessionListInfo,
+  SkillFormat,
+  SkillImportKind,
+  SkillImportPlan,
+  SkillImportResult,
+  SkillLayer,
+  SkillOpResponse,
+  SkillsResponse,
   Snapshot,
   SubagentItem,
   ThinkingInfo,
@@ -220,6 +227,49 @@ export const api = {
       `/api/mcp/reconnect${project ? `?project=${encodeURIComponent(project)}` : ""}`,
       { method: "POST", body: JSON.stringify(name ? { name } : {}) }
     ),
+  // ---- 技能（内核 skill 系统管理面） ----
+  /** 技能全景：两层各自的已识别/未识别条目 + 内核合并后的生效清单（project 缺省 = 只看用户层） */
+  skills: (project: string | null) =>
+    request<SkillsResponse>(`/api/skills${project ? `?project=${encodeURIComponent(project)}` : ""}`),
+  /** 读某层某技能正文（按层解析：name/SKILL.md 优先 → name.md；给了 format 就只读那一个物理落点） */
+  skillFile: (project: string | null, layer: SkillLayer, name: string, format?: SkillFormat) =>
+    request<{ text: string; path: string; format: SkillFormat; size: number }>(
+      `/api/skills/file?layer=${layer}&name=${encodeURIComponent(name)}${format ? `&format=${format}` : ""}` + (project ? `&project=${encodeURIComponent(project)}` : "")
+    ),
+  /** 新建（一律扁平 name.md；该层同名已存在 → 409） */
+  createSkill: (p: { project: string | null; layer: SkillLayer; name: string; content: string }) =>
+    request<SkillOpResponse>("/api/skills", { method: "POST", body: JSON.stringify(p) }),
+  /** 保存（必须命中该层已存在的文件；找不到 → 404，绝不新建影子文件；format 指定只写哪个落点） */
+  saveSkill: (p: { project: string | null; layer: SkillLayer; name: string; content: string; format?: SkillFormat }) =>
+    request<SkillOpResponse>("/api/skills", { method: "PUT", body: JSON.stringify(p) }),
+  /** 重命名（子目录格式整目录改名，资源文件随目录走；format 指定源落点） */
+  renameSkill: (p: { project: string | null; layer: SkillLayer; name: string; to: string; format?: SkillFormat }) =>
+    request<SkillOpResponse>("/api/skills/rename", { method: "POST", body: JSON.stringify(p) }),
+  /** 删除（子目录格式只删 SKILL.md；目录里还有资源文件则保留目录并在 note 里说明；
+   *  `whole: true` = 连**整个目录**一起删（含资源文件，不可逆）；format 指定删哪个落点） */
+  deleteSkill: (p: { project: string | null; layer: SkillLayer; name: string; format?: SkillFormat; whole?: boolean }) =>
+    request<SkillOpResponse>("/api/skills", { method: "DELETE", body: JSON.stringify(p) }),
+  // ---- 技能导入（两段式：plan 只读取到暂存并出候选，apply 才落盘） ----
+  /** 扫描源（本地目录 / Git 仓库）→ 候选清单；只读，不碰任何技能目录（暂存 10 分钟 TTL） */
+  importPlan: (p: {
+    project: string | null
+    layer: SkillLayer
+    kind: SkillImportKind
+    path?: string
+    url?: string
+    subpath?: string
+    ref?: string
+  }) => request<SkillImportPlan>("/api/skills/import/plan", { method: "POST", body: JSON.stringify(p) }),
+  /** 按候选逐项落盘（action 缺省 = 不覆盖）；响应带逐项结果与最新全景 */
+  importApply: (p: {
+    project: string | null
+    layer: SkillLayer
+    id: string
+    items: { name: string; action: "skip" | "overwrite" }[]
+  }) => request<SkillImportResult>("/api/skills/import/apply", { method: "POST", body: JSON.stringify(p) }),
+  /** 放弃暂存（关面板时调；id 已过期 → 服务端 404，调用方自行忽略） */
+  importDrop: (id: string) =>
+    request<{ ok: true }>(`/api/skills/import/${encodeURIComponent(id)}`, { method: "DELETE" }),
   version: () => request<{ webui: string; thincoder: string | null; boot: string }>("/api/version"),
   /** 内核（npm 包 thincoder）最新版检查——服务端带 TTL 缓存，失败时 latest=null 且带 error */
   kernelUpdate: () =>

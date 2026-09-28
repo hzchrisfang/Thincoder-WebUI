@@ -1,7 +1,7 @@
 /**
  * store/usage.mjs — 用量持久化（M3）
  * node:sqlite（内置），~/.thincoder-webui/usage.db
- * 每次 LLM 调用（内核 onUsage）记一行；看板按日/按模型聚合。
+ * 每次 LLM 调用（内核 onUsage）记一行；看板按日 / 按项目 / 按模型聚合。
  */
 
 import { DatabaseSync } from "node:sqlite"
@@ -46,7 +46,7 @@ export function recordUsage({ project, provider, model, prompt_tokens, completio
   )
 }
 
-/** 聚合查询：近 N 天总量 + 按日 + 按模型 */
+/** 聚合查询：近 N 天总量 + 按日 + 按项目 + 按模型 */
 export function queryUsage({ days = 7, fromTs } = {}) {
   // fromTs 优先（「当天」= 本地零点起算）；否则按自然日回溯 days 天
   const since = typeof fromTs === "number" ? fromTs : Date.now() - Number(days) * 86400_000
@@ -75,6 +75,22 @@ export function queryUsage({ days = 7, fromTs } = {}) {
     )
     .all(since)
 
+  // 按项目：与按日/按模型同口径；**不设 LIMIT**——项目数是白名单量级（十来个），
+  // 截断只会静默丢行（项目一多就有人从表里消失且无任何提示）。
+  // 次级排序键 `project`：调用数相等的项目之间 SQLite 不保证顺序，加显式键才可复现
+  const byProject = db
+    .prepare(
+      `SELECT project,
+              COUNT(*) AS calls,
+              COALESCE(SUM(prompt_tokens), 0) AS prompt,
+              COALESCE(SUM(completion_tokens), 0) AS completion,
+              COALESCE(SUM(cache_hit), 0) AS hit,
+              COALESCE(SUM(cache_miss), 0) AS miss
+       FROM usage WHERE ts >= ?
+       GROUP BY project ORDER BY calls DESC, project`
+    )
+    .all(since)
+
   const byModel = db
     .prepare(
       `SELECT provider, model,
@@ -88,7 +104,7 @@ export function queryUsage({ days = 7, fromTs } = {}) {
     )
     .all(since)
 
-  return { days: typeof fromTs === "number" ? 0 : Number(days), totals, byDay, byModel }
+  return { days: typeof fromTs === "number" ? 0 : Number(days), totals, byDay, byProject, byModel }
 }
 
 /** 聚合某项目时间窗 [fromTs, toTs) 内的 LLM 调用（聊天轮次重建用；定时任务不入库，不会串数据） */

@@ -19,6 +19,7 @@ import SettingsPage from "./components/SettingsPage"
 import AboutPage from "./components/AboutPage"
 import JobsPage from "./components/JobsPage"
 import McpPage from "./components/McpPage"
+import SkillsPage from "./components/SkillsPage"
 import TMark from "./components/TMark"
 import { getInitialTheme, applyTheme, type Theme } from "./lib/theme"
 import { unlockAudio, playSound, shouldRingDone } from "./lib/sound"
@@ -1135,6 +1136,7 @@ export default function App() {
                   queued={queued}
                   onSubmit={send}
                   onAbort={stop}
+                  project={project}
                   prefill={prefill} onPrefillTaken={() => setPrefill(null)}
                 />
               </div>
@@ -1156,6 +1158,17 @@ export default function App() {
         {view === "git" && <GitPage project={project} />}
         {view === "jobs" && <JobsPage projects={projects} refreshTick={jobsTick} />}
         {view === "mcp" && <McpPage project={project} running={running} refreshTick={mcpTick} />}
+        {view === "skills" && (
+          <SkillsPage
+            project={project}
+            onActivate={(name) => {
+              // 载入到对话 = 回对话页把「加载技能「名」」**填进输入框**（用户裁定 2026-09-27）
+              // 只填不发：与建议卡同一条约定（点击 = 填入，发不发由用户自己按发送键决定）
+              setView("chat")
+              setPrefill({ text: `加载技能「${name}」` })
+            }}
+          />
+        )}
         {view === "settings" && <SettingsPage onProviderChanged={refreshProvider} />}
         {view === "about" && <AboutPage />}
       </div>

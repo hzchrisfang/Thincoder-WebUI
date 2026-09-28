@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
+import { api } from "../lib/api"
 import { SLASH_COMMANDS, type SlashCommand } from "../lib/commands"
+import type { SkillsResponse } from "../lib/types"
 import DirPicker from "./DirPicker"
 import Tooltip from "./Tooltip"
 
@@ -10,6 +12,8 @@ interface Props {
   /** 挂起会话中（后台池仍 live）：停止键让位给发送键——挂起期输入开放且优先执行（D1） */
   suspended: boolean
   queued: number
+  /** 当前项目（「＋ → 载入技能」拉技能清单用；null = 只列用户层技能） */
+  project: string | null
   onSubmit: (text: string) => void
   onAbort: () => void
   prefill?: { text: string } | null
@@ -18,17 +22,22 @@ interface Props {
 }
 
 /** 输入区：Claude 风格 —— 圆润浮起输入框 + 珊瑚色发送键；键入 / 弹出斜线命令菜单 */
-export default function Composer({ disabled, disabledReason, running, suspended, queued, onSubmit, onAbort, prefill, onPrefillTaken }: Props) {
+export default function Composer({ disabled, disabledReason, running, suspended, queued, project, onSubmit, onAbort, prefill, onPrefillTaken }: Props) {
   const [text, setText] = useState("")
   const [menuOpen, setMenuOpen] = useState(true)
   const [sel, setSel] = useState(0)
   const ref = useRef<HTMLTextAreaElement>(null)
   const [pickingFile, setPickingFile] = useState(false)
+  /** 「＋」菜单（用户裁定 2026-09-27：一类功能变两类——插文件路径 / 载入技能） */
+  const [addOpen, setAddOpen] = useState(false)
+  /** 「＋」菜单的层级：一级两项（插路径 / 调技能），二级才是技能清单（用户裁定 2026-09-28） */
+  const [addView, setAddView] = useState<"root" | "skills">("root")
+  /** 可载入的技能 = 内核合并结果里的 effective（就是 agent 真能看到的那些；遮蔽行不会进来） */
+  const [skills, setSkills] = useState<SkillsResponse["effective"] | null>(null)
+  const [skillsErr, setSkillsErr] = useState<string | null>(null)
 
-  // 「＋」选文件后把绝对路径插到光标处（含空格的路径加引号）
-  const insertPath = (p: string) => {
-    setPickingFile(false)
-    const snippet = (/\s/.test(p) ? `"${p}"` : p) + " "
+  /** 把一段文本插到光标处（「＋」两条入口共用同一套光标/选区处理） */
+  const insertSnippet = (snippet: string) => {
     const el = ref.current
     if (!el) {
       setText((t) => t + snippet)
@@ -42,6 +51,38 @@ export default function Composer({ disabled, disabledReason, running, suspended,
       el.focus()
       el.setSelectionRange(pos, pos)
     })
+  }
+
+  // 「＋」选文件后把绝对路径插到光标处（含空格的路径加引号）
+  const insertPath = (p: string) => {
+    setPickingFile(false)
+    insertSnippet((/\s/.test(p) ? `"${p}"` : p) + " ")
+  }
+
+  /** 开/关「＋」菜单；首次打开时懒加载技能清单（拉失败只影响二级菜单，不影响插文件路径） */
+  const openAdd = () => {
+    if (addOpen) {
+      setAddOpen(false)
+      return
+    }
+    setAddView("root") // 每次打开都从一级开始
+    setAddOpen(true)
+  }
+
+  /** 进二级才拉技能清单（用户只想要「插入文档路径」时不发这个请求）；读失败只影响这一个二级菜单 */
+  const openSkills = () => {
+    setAddView("skills")
+    if (skills || skillsErr) return
+    void api
+      .skills(project)
+      .then((r) => setSkills(r.effective))
+      .catch((e: unknown) => setSkillsErr(e instanceof Error ? e.message : String(e)))
+  }
+
+  /** 点一个技能：把「加载技能「名」」填进输入框——**只填不发**（发不发由用户按发送键决定） */
+  const pickSkill = (name: string) => {
+    setAddOpen(false)
+    insertSnippet(`加载技能「${name}」 `)
   }
 
   // 方案卡「需要调整」/ 点建议卡 / 回退回填的输入框预填。**一次性交接**：取用后立刻让父层清掉 prefill——
@@ -156,18 +197,95 @@ export default function Composer({ disabled, disabledReason, running, suspended,
             disabled ? "border-line opacity-70" : "border-line2 shadow-sm focus-within:border-accent focus-within:shadow-md"
           }`}
         >
-          <Tooltip label="插入文件路径（从磁盘选文件）">
-            <button
-              onClick={() => setPickingFile(true)}
-              disabled={disabled}
-              aria-label="插入文件路径（从磁盘选文件）"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-t3 transition-colors hover:bg-hover hover:text-t1 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <svg viewBox="0 0 16 16" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                <path d="M8 3.5v9M3.5 8h9" />
-              </svg>
-            </button>
-          </Tooltip>
+          <div className="relative shrink-0">
+            <Tooltip label="插入文档路径 / 调用技能">
+              <button
+                data-add-open
+                onClick={openAdd}
+                disabled={disabled}
+                aria-label="插入文档路径 / 调用技能"
+                className="flex h-9 w-9 items-center justify-center rounded-full text-t3 transition-colors hover:bg-hover hover:text-t1 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <svg viewBox="0 0 16 16" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
+                  <path d="M8 3.5v9M3.5 8h9" />
+                </svg>
+              </button>
+            </Tooltip>
+            {addOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setAddOpen(false)} />
+                <div
+                  data-add="menu"
+                  data-add-view={addView}
+                  className="absolute bottom-full left-0 z-50 mb-2 max-h-80 w-72 overflow-y-auto rounded-xl border border-line2 bg-surface2 py-1 shadow-lg"
+                >
+                  {/* 一级只两项（用户裁定 2026-09-28）：插路径 / 调技能；技能清单在二级 */}
+                  {addView === "root" ? (
+                    <>
+                      <button
+                        data-add-item="file"
+                        onClick={() => {
+                          setAddOpen(false)
+                          setPickingFile(true)
+                        }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-t2 transition-colors hover:bg-hover"
+                      >
+                        <svg viewBox="0 0 16 16" className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M1.5 4.5A1.5 1.5 0 0 1 3 3h3l1.5 1.5H13a1.5 1.5 0 0 1 1.5 1.5v5A1.5 1.5 0 0 1 13 12.5H3A1.5 1.5 0 0 1 1.5 11z" />
+                        </svg>
+                        插入文档路径
+                      </button>
+                      <button
+                        data-add-item="skills"
+                        onClick={openSkills}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs text-t2 transition-colors hover:bg-hover"
+                      >
+                        {/* 锤子 = 技能（Lucide hammer，ISC；与左侧导航轨那个技能图标同形——两处一起改） */}
+                        <svg viewBox="0 0 16 16" className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                          <g transform="scale(0.66667)" strokeWidth="2.4">
+                            <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9" />
+                            <path d="m18 15 4-4" />
+                            <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5" />
+                          </g>
+                        </svg>
+                        调用技能
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        data-add-item="back"
+                        onClick={() => setAddView("root")}
+                        className="block w-full px-3 py-2 text-left text-xs text-t3 transition-colors hover:bg-hover"
+                      >
+                        ← 返回
+                      </button>
+                      <div className="my-1 border-t border-line" />
+                      {skillsErr ? (
+                        <div className="px-3 py-1.5 text-xs text-red-300">技能清单读取失败：{skillsErr}</div>
+                      ) : skills === null ? (
+                        <div className="px-3 py-1.5 text-xs text-t4">读取技能清单…</div>
+                      ) : skills.length === 0 ? (
+                        <div className="px-3 py-1.5 text-xs text-t4">（还没有技能）</div>
+                      ) : (
+                        skills.map((s) => (
+                          <button
+                            key={s.name}
+                            data-add-skill={s.name}
+                            onClick={() => pickSkill(s.name)}
+                            className="block w-full px-3 py-1.5 text-left transition-colors hover:bg-hover"
+                          >
+                            <span className="block truncate text-xs text-t1">{s.name}</span>
+                            <span className="block truncate text-[11px] text-t4">{s.declaredDescription ?? s.description}</span>
+                          </button>
+                        ))
+                      )}
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
 
           <textarea
             ref={ref}

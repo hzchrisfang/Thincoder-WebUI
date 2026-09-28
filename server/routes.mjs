@@ -14,6 +14,8 @@ import { listProjects, addProject, removeProject, getHost, setHost } from "./lib
 import { getServerReg } from "./lib/server-reg.mjs"
 import * as runner from "./bridge/runner.mjs"
 import * as mcp from "./bridge/mcp.mjs"
+import * as skills from "./bridge/skills.mjs"
+import * as skillImport from "./bridge/skills-import.mjs"
 import { loadThincoder, poolEntries, runSlashCommand, getAgent, thinkingGet, thinkingSet } from "./bridge/thincoder.mjs"
 import * as sessions from "./bridge/sessions.mjs"
 import * as subagents from "./bridge/subagents.mjs"
@@ -722,6 +724,115 @@ async function handleApi(req, res, url) {
       }
     }
 
+    // ---- 技能（内核 skill 系统的 Web 管理面：两层 .thincoder/skills/ 的 列出/读/建/存/改名/删） ----
+    // 与 /skills 斜线命令并存互不影响：那条链路只把内核 TUI 的输出打进时间线，不碰文件。
+    // 写技能**不设 busy 门**——技能文件不碰 config/session/agent 运行时，内核每轮组装 system prompt
+    // 时现读（core/agent/setup.mjs:231-235）⇒ 运行中写也是下一轮生效（对照 /api/command 的 409）。
+    if (p === "/api/skills" && method === "GET") {
+      const pre = skillsProject(res, url.searchParams.get("project"))
+      if (!pre) return
+      try {
+        return json(res, 200, await skills.listSkills({ projectDir: pre.dir }))
+      } catch (err) {
+        return skillsFail(res, err)
+      }
+    }
+    if (p === "/api/skills/file" && method === "GET") {
+      const layer = url.searchParams.get("layer")
+      const pre = skillsProject(res, url.searchParams.get("project"), layer)
+      if (!pre) return
+      try {
+        return json(res, 200, await skills.readSkillFile({
+          projectDir: pre.dir, layer, name: url.searchParams.get("name") ?? "",
+          format: url.searchParams.get("format"),
+        }))
+      } catch (err) {
+        return skillsFail(res, err)
+      }
+    }
+    if (p === "/api/skills" && method === "POST") {
+      const body = await readBody(req)
+      const pre = skillsProject(res, body.project, body.layer)
+      if (!pre) return
+      try {
+        return json(res, 200, await skills.createSkill({
+          projectDir: pre.dir, layer: body.layer, name: body.name, content: body.content,
+        }))
+      } catch (err) {
+        return skillsFail(res, err)
+      }
+    }
+    if (p === "/api/skills" && method === "PUT") {
+      const body = await readBody(req)
+      const pre = skillsProject(res, body.project, body.layer)
+      if (!pre) return
+      try {
+        return json(res, 200, await skills.saveSkill({
+          projectDir: pre.dir, layer: body.layer, name: body.name, content: body.content, format: body.format,
+        }))
+      } catch (err) {
+        return skillsFail(res, err)
+      }
+    }
+    if (p === "/api/skills/rename" && method === "POST") {
+      const body = await readBody(req)
+      const pre = skillsProject(res, body.project, body.layer)
+      if (!pre) return
+      try {
+        return json(res, 200, await skills.renameSkill({
+          projectDir: pre.dir, layer: body.layer, name: body.name, to: body.to, format: body.format,
+        }))
+      } catch (err) {
+        return skillsFail(res, err)
+      }
+    }
+    if (p === "/api/skills" && method === "DELETE") {
+      const body = await readBody(req)
+      const pre = skillsProject(res, body.project, body.layer)
+      if (!pre) return
+      try {
+        return json(res, 200, await skills.deleteSkill({ projectDir: pre.dir, layer: body.layer, name: body.name, format: body.format, whole: body.whole === true }))
+      } catch (err) {
+        return skillsFail(res, err)
+      }
+    }
+
+    // ---- 技能导入（两段式：plan 只读取到暂存并出候选，apply 才落盘；暂存 10 分钟 TTL 兜底） ----
+    // 取源面（skills-import.mjs）**不碰任何技能目录**：看清要装什么再决定装什么；落盘归 skills.applyImport。
+    if (p === "/api/skills/import/plan" && method === "POST") {
+      const body = await readBody(req)
+      const pre = skillsProject(res, body.project, body.layer)
+      if (!pre) return
+      try {
+        return json(res, 200, await skillImport.prepareImport({
+          kind: body.kind, path: body.path, url: body.url, subpath: body.subpath, ref: body.ref,
+          layer: body.layer, projectDir: pre.dir,
+        }))
+      } catch (err) {
+        return skillsFail(res, err)
+      }
+    }
+    if (p === "/api/skills/import/apply" && method === "POST") {
+      const body = await readBody(req)
+      const pre = skillsProject(res, body.project, body.layer)
+      if (!pre) return
+      // 计划过期/已放弃 → 404（暂存目录已被清），文案引导重新扫描；绝不拿一个死计划的路径去写盘
+      const plan = await skillImport.getPlan(body.id)
+      if (!plan) return json(res, 404, { error: "导入暂存已失效（可能已过期或已放弃），请重新扫描" })
+      try {
+        return json(res, 200, await skills.applyImport({
+          projectDir: pre.dir, layer: body.layer, stagingDir: plan.dir, items: body.items,
+        }))
+      } catch (err) {
+        return skillsFail(res, err)
+      }
+    }
+    if (p.startsWith("/api/skills/import/") && method === "DELETE") {
+      const id = decodeURIComponent(p.slice("/api/skills/import/".length))
+      if (!(await skillImport.dropPlan(id))) return json(res, 404, { error: "导入暂存不存在（可能已过期）" })
+      return json(res, 200, { ok: true })
+    }
+
     // ---- 用量（M3） ----
     if (p === "/api/usage" && method === "GET") {
       const raw = url.searchParams.get("days")
@@ -996,6 +1107,38 @@ function normalizePath(p) {
 function requireProject(url, runnerRef) {
   const dir = normalizePath(url.searchParams.get("project"))
   return runnerRef.isKnownProject(dir) ? dir : null
+}
+
+/**
+ * 技能接口的项目口径（/api/skills*）：
+ * - layer 只认 project / user，其余（含缺省）→ 400
+ * - 提供了 project 就必须在白名单 → 否则 403（与全部项目域接口同口径）
+ * - layer=project 必须有项目 → 否则 403（项目层没有「无项目」这个合法态）
+ * 成功返回 { dir }（dir 可为 null = 只看用户层）；已自行回过响应则返回 undefined（调用方 `if (!pre) return`）。
+ */
+function skillsProject(res, project, layer) {
+  if (layer !== undefined && layer !== null && layer !== "project" && layer !== "user") {
+    json(res, 400, { error: `层级参数无效（只支持 project 或 user）：${String(layer)}` })
+    return undefined
+  }
+  const raw = typeof project === "string" && project.trim() ? project : null
+  const dir = raw ? normalizePath(raw) : null
+  if (raw && !runner.isKnownProject(dir)) {
+    json(res, 403, { error: "项目未在白名单中" })
+    return undefined
+  }
+  if (layer === "project" && !dir) {
+    // 走到这里只可能是没带 project（带了但不在白名单，上面已 403）⇒ 如实说缺参数，别把两类原因说成一个
+    // （桥接层 layerDirFor 同一情形也是这条文案）
+    json(res, 400, { error: "项目层操作需要 project 参数" })
+    return undefined
+  }
+  return { dir }
+}
+
+/** 技能接口的错误收尾：SkillError 自带状态（400/404/409/501）；其余归 400。文案是中文、可直接展示。 */
+function skillsFail(res, err) {
+  return json(res, err instanceof skills.SkillError ? err.status : 400, { error: err?.message ?? String(err) })
 }
 
 /** key 脱敏：只露尾 4 位 */

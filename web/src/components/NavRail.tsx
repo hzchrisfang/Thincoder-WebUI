@@ -1,6 +1,6 @@
 import TMark from "./TMark"
 import Tooltip from "./Tooltip"
-export type View = "chat" | "jobs" | "usage" | "git" | "mcp" | "settings" | "about"
+export type View = "chat" | "jobs" | "usage" | "git" | "mcp" | "skills" | "settings" | "about"
 
 interface Props {
   view: View
@@ -49,6 +49,17 @@ const ICONS: Record<View | "sun" | "moon", React.ReactNode> = {
       <path d="M5 4.8h.01M5 11.2h.01" />
     </>
   ),
+  // 技能：锤子（**Lucide 的 hammer 图标**，ISC 许可，原样取用、未重画）
+  // 来源 https://lucide.dev/icons/hammer（lucide-static v0.544.0）；官方是 24 网格、描边 2，
+  // 而本仓图标是 16 网格、描边 1.5 ⇒ 整组缩放 16/24（几何一字不改），描边 2.25 缩放后恰为 1.5。
+  // 对话「＋」菜单里那个「调用技能」图标**必须与本图同形**（两处一起改，别只改一处）。
+  skills: (
+    <g transform="scale(0.66667)" strokeWidth="2.25">
+      <path d="m15 12-9.373 9.373a1 1 0 0 1-3.001-3L12 9" />
+      <path d="m18 15 4-4" />
+      <path d="m21.5 11.5-1.914-1.914A2 2 0 0 1 19 8.172v-.344a2 2 0 0 0-.586-1.414l-1.657-1.657A6 6 0 0 0 12.516 3H9l1.243 1.243A6 6 0 0 1 12 8.485V10l2 2h1.172a2 2 0 0 1 1.414.586L18.5 14.5" />
+    </g>
+  ),
   // 设置：齿轮
   settings: (
     <>
@@ -79,6 +90,7 @@ const ITEMS: { id: View; label: string; tip?: string }[] = [
   { id: "usage", label: "用量" },
   { id: "git", label: "Git" },
   { id: "mcp", label: "MCP" },
+  { id: "skills", label: "技能" },
   { id: "settings", label: "设置" },
   { id: "about", label: "关于" },
 ]

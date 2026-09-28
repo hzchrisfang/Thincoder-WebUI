@@ -246,6 +246,11 @@ export interface UsageByDay extends UsageAggRow {
   day: string
 }
 
+export interface UsageByProject extends UsageAggRow {
+  /** 项目目录绝对路径（落库原值）——界面显示末段短名，全路径由悬停提示给出 */
+  project: string
+}
+
 export interface UsageByModel extends UsageAggRow {
   provider: string
   model: string
@@ -255,6 +260,7 @@ export interface UsageStats {
   days: number
   totals: UsageAggRow
   byDay: UsageByDay[]
+  byProject: UsageByProject[]
   byModel: UsageByModel[]
 }
 
@@ -497,5 +503,121 @@ export interface McpImportResult {
   installed: McpImportGroup[]
   skipped: { name: string; reason: string }[]
   failed: { name: string; error: string }[]
+}
+
+// ---- 技能（内核 skill 系统） ----
+// 形状与 server/bridge/skills.mjs 的返回值逐字对齐：description/effective 全部来自内核 loadSkills
+// （与注入 system prompt 的那份同源），前端不再自算任何一条。
+
+/** 技能层级：项目层 <project>/.thincoder/skills/ · 用户层 ~/.thincoder/skills/ */
+export type SkillLayer = "project" | "user"
+
+/** 技能的两种物理落点：flat = <name>.md · dir = <name>/SKILL.md（内核同源） */
+export type SkillFormat = "flat" | "dir"
+
+/** 遮蔽者 = 内核合并结果里的同名赢家（未生效的行由此知道「谁遮了我」）
+ *  文案判据由这份数据决定，不由本行层级猜——否则会说「子目录行被同名子目录技能遮蔽」这类自指错话 */
+export interface SkillShadowedBy {
+  layer: SkillLayer
+  path: string
+  format: SkillFormat
+}
+
+export interface SkillEntry {
+  name: string
+  description: string
+  /** 作者自述（frontmatter `description:`）；没写 = null。**列表显示以它优先**（用户裁定 2026-09-27） */
+  declaredDescription: string | null
+  path: string
+  format: SkillFormat // flat = name.md；dir = name/SKILL.md
+  size: number
+  mtime: number
+  /** 内核合并结果里是否采用了这一条（未被采用 ⇒ 内核看不见它，agent 也拿不到） */
+  effective: boolean
+  /** 未被采用且别处已有同名条目（用户层被项目层遮蔽 / 同层扁平被同名子目录短路）；= shadowedBy !== null */
+  shadowed: boolean
+  /** 遮住这一条的同名赢家；未被遮蔽 = null */
+  shadowedBy: SkillShadowedBy | null
+}
+
+/** 内核不认的条目（名字不过白名单 / 子目录缺 SKILL.md / 非 .md）——内核静默忽略，这里如实报出来 */
+export interface SkillIgnored {
+  entry: string
+  kind: "dir" | "file"
+  reason: string
+}
+
+export interface SkillLayerState {
+  layer: SkillLayer
+  /** 层目录绝对路径；未打开项目时项目层为 null */
+  dir: string | null
+  exists: boolean
+  skills: SkillEntry[]
+  ignored: SkillIgnored[]
+}
+
+export interface SkillsResponse {
+  /** 固定顺序：project → user */
+  layers: SkillLayerState[]
+  /** 内核 loadSkills 的合并结果（= agent 实际能看到的清单） */
+  effective: SkillEntry[]
+  /** 例如未打开项目时「仅显示用户级技能」 */
+  note: string | null
+}
+
+/** 写操作响应 = 最新全景 + 本次操作的回执字段 */
+export interface SkillOpResponse extends SkillsResponse {
+  ok: true
+  path?: string
+  format?: SkillFormat
+  warnings?: string[]
+  /** 删除时目录被保留（还有资源文件）的说明 */
+  removed?: string
+}
+
+// ---- 技能导入（两段式：plan 只读、apply 才写；形状与 server/bridge/skills-import.mjs 逐字对齐） ----
+
+/** 导入源类型：本地目录 / Git 仓库 */
+export type SkillImportKind = "dir" | "git"
+
+/** 一个候选技能：描述/格式全部来自内核 loadSkills（前端不再自算），files/size 来自实际复制量算 */
+export interface SkillImportCandidate {
+  name: string
+  format: SkillFormat
+  description: string
+  /** 作者自述（`SKILL.md` 的 frontmatter `description:`）；没写 = null。**面板显示以它优先**（用户裁定 2026-09-27） */
+  declaredDescription: string | null
+  /** 将写入的总字节数（flat = 正文长度；dir 含资源文件） */
+  size: number
+  /** 将写入的文件数（flat 恒 1；dir 含资源文件） */
+  files: number
+  /** 正文前 20 行且截 2048 个 UTF-16 码元（纯 ASCII 约为 2KB；中文一字一码元，字节能多好几倍） */
+  preview: string
+  /** 目标层里的占用情况；无冲突 = null。kind: file = <name>.md 被占；name = <name>/SKILL.md 被占；dir = 裸目录被占 */
+  conflict: { kind: "name" | "file" | "dir"; path: string } | null
+}
+
+export interface SkillImportPlan {
+  id: string
+  source: { kind: SkillImportKind; label: string; ref?: string; commit?: string }
+  candidates: SkillImportCandidate[]
+  /** 源里内核不认、已忽略的条目（如实上报，绝不静默丢） */
+  note?: string | null
+}
+
+/** 单条导入结果：action = 本次对该项采用的**冲突处置**（无冲突时也是 skip）；status 才是真实结果 */
+export interface SkillImportItemResult {
+  name: string | null
+  action: "skip" | "overwrite"
+  status: "written" | "skipped" | "failed"
+  error?: string
+  /** 写成功但有话要说（如：跨格式覆盖时新写入的那条会被同名子目录遮蔽、不会生效） */
+  note?: string
+}
+
+/** apply 响应 = 逐项结果 + 最新全景（页面显示 = 服务端 = 内核所见） */
+export interface SkillImportResult extends SkillsResponse {
+  ok: true
+  results: SkillImportItemResult[]
 }
 

@@ -59,7 +59,7 @@ export async function loadThincoder() {
   if (tc) return tc
   const dir = resolveCoreDir()
   const url = (f) => pathToFileURL(join(dir, f)).href
-  const [agent, config, configIo, memory, tools, session, sessionLifecycle, sessionSlots, checkpoint, embedding, mcp, provider, gitmem, rules, proxy, editDiff, shared, relayPrefix, suspCore, asyncDiscard, subagentAsync, consultCore, asyncSettle, parentChannel] = await Promise.all([
+  const [agent, config, configIo, memory, tools, session, sessionLifecycle, sessionSlots, checkpoint, embedding, mcp, provider, gitmem, rules, proxy, editDiff, shared, relayPrefix, suspCore, asyncDiscard, subagentAsync, consultCore, asyncSettle, parentChannel, skillsCore] = await Promise.all([
     import(url("agent.mjs")),
     import(url("config.mjs")),
     import(url("config-io.mjs")),
@@ -91,6 +91,10 @@ export async function loadThincoder() {
     import(url("agent-tools/consult.mjs")).catch(() => null),
     import(url("agent-tools/async-settle.mjs")).catch(() => null),
     import(url("agent-tools/parent-channel.mjs")).catch(() => null),
+    // 技能系统（core/skills.mjs）——WebUI 技能管理面的唯一数据源：清单/描述/合并规则全取内核，
+    // WebUI 零重实现（见 bridge/skills.mjs）。可选导入（.catch → null，同 relay/consult 先例）：
+    // 旧内核缺此模块 ⇒ 该面整体为 null ⇒ 技能路由回 501，其余功能照旧。
+    import(url("skills.mjs")).catch(() => null),
   ])
 
   // saveConfig 兼容层：旧语义（cfg 整对象覆盖落盘）→ 新 writeConfigAtomic（新鲜读 + mtime 门控）。
@@ -227,6 +231,12 @@ export async function loadThincoder() {
     // 由 agent 自己调，WebUI 不代调）。可选导入语义同 relay：模块缺失（旧内核）→ null，
     // 路由据此回明确错误，装配与其余功能不受影响。
     consult: consultCore?.consultStopTool ? { stopTool: consultCore.consultStopTool } : null,
+    // 技能系统的唯一适配面（bridge/skills.mjs 只经此表取核函数）：**只暴露 loadSkills**——本模块要的是
+    // 「按层」视角（一层目录一张清单：条目归属、遮蔽、寻址全按层算），loadSkills 的清单/描述/合并规则
+    // 就是权威（与注入 system prompt 的那份同源，core/agent/setup.mjs:231-235）。内核的 readSkill 是
+    // 「跨层按名查」，落点不可控（项目层 → 用户层、子目录 → 扁平），管理层用不上它。
+    // null = 旧内核不支持（路由回 501），管理面整体消失而其余功能照旧。
+    skills: skillsCore ? { loadSkills: skillsCore.loadSkills } : null,
     // 薄壳 tui 目录按安装形态探测：本地平级（node_modules/thincoder）与全局内嵌
     // （thincoder/node_modules/@thincoder/core）两种布局都覆盖。斜线命令表与
     // 思考程度设置（thinkingSet 复用内核 cmd-think.mjs 的 applyThink）共用此探测。

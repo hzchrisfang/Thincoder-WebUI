@@ -332,11 +332,19 @@ export default function TopBar(p: Props) {
           {subBusy ? (
             <span className="spinner" />
           ) : (
+            // 子代理 = 机器人（**Lucide 的 bot 图标**，ISC 许可，原样取用、未重画）
+            // 来源 https://lucide.dev/icons/bot（lucide-static v0.544.0）；官方是 24 网格、描边 2，
+            // 而本仓图标是 16 网格、此处描边 1.6 ⇒ 整组缩放 16/24（几何一字不改），描边 2.4 缩放后 ≈ 1.6
+            // （0.66667 是 16/24 的六位近似，实算 2.4 × 0.66667 = 1.600008；图形最大坐标是 22 不是 24，这点差值碰不到边界）
             <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="3" cy="8" r="1.5" />
-              <path d="M4.5 8h7.9" />
-              <path d="M5.8 8c2.3 0 2.1-4.6 4.6-4.6h2" />
-              <path d="M5.8 8c2.3 0 2.1 4.6 4.6 4.6h2" />
+              <g transform="scale(0.66667)" strokeWidth="2.4">
+                <path d="M12 8V4H8" />
+                <rect width="16" height="12" x="4" y="8" rx="2" />
+                <path d="M2 14h2" />
+                <path d="M20 14h2" />
+                <path d="M15 13v2" />
+                <path d="M9 13v2" />
+              </g>
             </svg>
           )}
           子代理

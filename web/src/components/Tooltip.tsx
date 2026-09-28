@@ -104,8 +104,12 @@ function placeFloating(trigger: HTMLElement | null, bubble: HTMLElement | null):
  * 包含块，浮层会重新被裁或错位。**本组件当前调用点的祖先链已核**（`App.tsx` 壳层、设置页 / 供应商表单、顶栏渠道菜单链上均无此类）。
  * 但本仓另有 6 处弹窗遮罩带 `backdrop-blur-sm`（`DirPicker` / `GitPage` / `JobsPage` / `Modals` / `RollbackDialog` / `SessionPanel`）：
  * **把那类容器里的文本接上本组件前，必须先复核包含块**（`backdrop-filter` 与 `filter` 同类，别只查 `transform`）。
+ *
+ * `always`：图标按钮等**没有可截断文本**的场景。原本「文本被截断才弹」的门槛在那种场景下会让浮层
+ * 永不出现（2026-09-28 实测：技能行两个图标按钮悬停什么都不弹——用户报的就是这个）。置 true 关掉那道
+ * 门槛；定位与防裁逻辑照旧（滚动容器里仍必须用本组件，不能用 `Tooltip`）。
  */
-export function FloatingTooltip({ label, className, children }: Omit<Props, "side">) {
+export function FloatingTooltip({ label, className, always = false, children }: Omit<Props, "side"> & { always?: boolean }) {
   const wrapRef = useRef<HTMLSpanElement>(null)
   const bubRef = useRef<HTMLSpanElement>(null)
   const [showing, setShowing] = useState(false)
@@ -116,12 +120,12 @@ export function FloatingTooltip({ label, className, children }: Omit<Props, "sid
   useLayoutEffect(() => {
     if (!showing) return
     const wrap = wrapRef.current
-    if (wrap && !hasClippedText(wrap)) {
+    if (wrap && !always && !hasClippedText(wrap)) {
       setShowing(false) // 新文本已不再截断 ⇒ 收起，不留一个没必要的浮层（下一轮 no-op，不会成环）
       return
     }
     setPos(placeFloating(wrap, bubRef.current))
-  }, [showing, label])
+  }, [showing, label, always])
 
   useEffect(() => {
     if (!showing) return
@@ -136,7 +140,8 @@ export function FloatingTooltip({ label, className, children }: Omit<Props, "sid
 
   const show = () => {
     const wrap = wrapRef.current
-    if (label == null || !wrap || !hasClippedText(wrap)) return
+    if (label == null || !wrap) return
+    if (!always && !hasClippedText(wrap)) return
     setPos(null) // 先挂载（visibility:hidden，可测量）→ 量完再给坐标，避免用上一次的旧坐标闪一帧
     setShowing(true)
   }
