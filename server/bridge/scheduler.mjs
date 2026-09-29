@@ -5,6 +5,7 @@
  * - 进程内调度：15s tick，结构化 schedule（every ≥1min / daily HH:MM / weekly 周几 HH:MM），
  *   五段式 cron 留升级接口
  * - 隔离执行：每任务独立 agent（不污染用户交互会话），Full Auto + maxTurns 上限 + 30 分钟看门狗
+ *   （该上限与交互回合同受设置开关「超时控制」（设置 → 性能）控制：到点那一刻读开关，关闭则不中止）
  * - 重试：瞬态错误（超时/429/5xx/网络）延迟 30s 重试 1 次，其余只记录（副作用任务不重复执行）
  * - 重启恢复：任务定义持久化在 jobs.json；停机期间到点的任务，启动后首个 tick 补跑一次
  */
@@ -15,12 +16,22 @@ import { existsSync, realpathSync } from "node:fs"
 import * as bus from "../lib/bus.mjs"
 import { createIsolatedAgent, loadThincoder } from "./thincoder.mjs"
 import { isKnownProject } from "./runner.mjs"
-import { loadJobs, saveJobs, getJob, putJob, removeJob, patchJob, appendRun } from "../store/jobs.mjs"
+import { getWatchdogEnabled } from "../lib/state.mjs"
+import { envInt } from "./watchdog.mjs"
+import { loadJobs, getJob, putJob, removeJob, patchJob, appendRun } from "../store/jobs.mjs"
 
 export const RETRY_DELAY_MS = 30_000
-export const JOB_WATCHDOG_MS = 30 * 60_000
+/** 单次定时任务的上限（本仓自加，非内核面）：到点即中止该次运行。
+ *  受设置开关「超时控制」（设置 → 性能）控制——与交互回合同一开关，见下方 runJob 的到点闸门。
+ *  env 旋钮 `TCW_JOB_WATCHDOG_MS` 只为测试/排障（与看门狗一族同款 `envInt` 口径：非法/非正一律回退默认，不会因手滑把窗口变成 0）。 */
+export const JOB_WATCHDOG_MS = envInt("TCW_JOB_WATCHDOG_MS", 30 * 60_000)
 export const DEFAULT_MAX_TURNS = 30
 const TICK_MS = 15_000
+
+/** 人读时长（只为超时文案）：≥1 分钟按分钟取整，否则按秒——避免窗口被 env 缩短时印出「0.05 分钟」这类小数 */
+function humanMs(ms) {
+  return ms >= 60_000 ? `${Math.round(ms / 60_000)} 分钟` : `${Math.round(ms / 1000)} 秒`
+}
 
 const running = new Set() // 运行中的 jobId
 let timer = null
@@ -168,16 +179,13 @@ export function stopScheduler() {
 
 function tick() {
   const now = Date.now()
-  let changed = false
   for (const job of loadJobs()) {
     if (!job.enabled || running.has(job.id)) continue
     if (job.nextRunAt != null && job.nextRunAt > now) continue
     // 先推进 nextRunAt 再异步执行，避免慢任务被重复点火
     patchJob(job.id, { nextRunAt: nextRunAt(job.schedule, now) })
-    changed = true
     executeJob(job.id, { retried: false }).catch(() => {})
   }
-  void changed
 }
 
 /** 立即执行一次（不改变排期） */
@@ -210,7 +218,20 @@ async function executeJob(id, { retried }) {
     const agent = await createIsolatedAgent(job.project)
     agent.autoApprove = true // 无人值守 = Full Auto（写盘/命令不再询问）
     ctrl = new AbortController()
-    const watchdog = setTimeout(() => ctrl.abort(), JOB_WATCHDOG_MS)
+    // 到点闸门：**到点那一刻**才读开关（实时）——开着即中止；关着就把同一条定时器再排一个完整
+    // 窗口（关态下每过一窗复查一次 ⇒ 用户中途打开开关，下一个窗口即恢复保护）。
+    // 句柄放在可变变量里：关态重排会换掉它，`finally` 清的是**最新**那一个（收尾后不留活定时器）。
+    let watchdog = null
+    const armJobWatchdog = () => {
+      watchdog = setTimeout(() => {
+        if (getWatchdogEnabled()) {
+          ctrl.abort()
+          return
+        }
+        armJobWatchdog() // 关闭态：下个窗口复查（开关是实时的，不能在这里一次性放弃）
+      }, JOB_WATCHDOG_MS)
+    }
+    armJobWatchdog()
     try {
       const final = await t.agent.runAgent(
         agent,
@@ -236,7 +257,9 @@ async function executeJob(id, { retried }) {
       error = `达到轮数上限（${err.turn} 轮），任务未跑完`
     } else if (ctrl?.signal.aborted) {
       status = "error"
-      error = `执行超时（${JOB_WATCHDOG_MS / 60000} 分钟看门狗）`
+      // 文案报**本次真实耗时**与单次上限两个数：闸门是「到点那一刻读开关」，关态跨多个窗口后再打开时才中止
+      // ⇒ 只写窗口长度会在那种情形下报小（实际跑了 90 分钟却写「30 分钟」）。
+      error = `执行超时（看门狗：本次运行 ${humanMs(Date.now() - startedAt)}，单次上限 ${humanMs(JOB_WATCHDOG_MS)}）`
     } else {
       status = "error"
       error = err?.message ?? String(err)

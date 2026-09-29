@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import { getToken, isAuthed, COOKIE_NAME } from "./lib/auth.mjs"
 import * as bus from "./lib/bus.mjs"
-import { listProjects, addProject, removeProject, getHost, setHost } from "./lib/state.mjs"
+import { listProjects, addProject, removeProject, getHost, setHost, getWatchdogEnabled, setWatchdogEnabled } from "./lib/state.mjs"
 import { getServerReg } from "./lib/server-reg.mjs"
 import * as runner from "./bridge/runner.mjs"
 import * as mcp from "./bridge/mcp.mjs"
@@ -1001,6 +1001,18 @@ async function handleApi(req, res, url) {
         }, 30)
       }
       return
+    }
+    // ---- 性能：超时控制（停滞自动中止）开关 ----
+    // 热生效：不重启即生效——runner 的看门狗每一跳都重读这个偏好（见 bridge/runner.mjs 的 armWatchdog），
+    // 定时任务的上限（bridge/scheduler.mjs 的 JOB_WATCHDOG_MS）也在**到点那一刻**重读它
+    if (p === "/api/watchdog" && method === "GET") {
+      return json(res, 200, { enabled: getWatchdogEnabled() })
+    }
+    if (p === "/api/watchdog" && method === "POST") {
+      const body = await readBody(req)
+      if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled 必须是布尔值" })
+      setWatchdogEnabled(body.enabled)
+      return json(res, 200, { ok: true, enabled: body.enabled })
     }
     if (p === "/api/token" && method === "GET") {
       return json(res, 200, { token: getToken() })

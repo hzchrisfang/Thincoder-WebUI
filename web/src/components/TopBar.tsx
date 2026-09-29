@@ -308,8 +308,14 @@ export default function TopBar(p: Props) {
             p.showTasks ? "bg-accent-soft text-accent" : "text-t3 hover:bg-hover hover:text-t1"
           }`}
         >
+          {/* 任务 = 清单勾选框（**Lucide 的 square-check-big 图标**，ISC 许可，原样取用、未重画） */}
+          {/* 来源 https://lucide.dev/icons/square-check-big（lucide-static v0.544.0）；官方是 24 网格、描边 2， */}
+          {/* 而本仓图标是 16 网格、此处描边 1.6 ⇒ 整组缩放 16/24（几何一字不改），描边 2.4 缩放后 ≈ 1.6 */}
           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M2.5 8.5l3 3 8-8" />
+            <g transform="scale(0.66667)" strokeWidth="2.4">
+              <path d="M21 10.656V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h12.344" />
+              <path d="m9 11 3 3L22 4" />
+            </g>
           </svg>
           任务
           {p.tasks.length > 0 && (
@@ -332,18 +338,17 @@ export default function TopBar(p: Props) {
           {subBusy ? (
             <span className="spinner" />
           ) : (
-            // 子代理 = 机器人（**Lucide 的 bot 图标**，ISC 许可，原样取用、未重画）
-            // 来源 https://lucide.dev/icons/bot（lucide-static v0.544.0）；官方是 24 网格、描边 2，
+            // 子代理 = 分发/共享（**Lucide 的 share-2 图标**，ISC 许可，原样取用、未重画）
+            // 来源 https://lucide.dev/icons/share-2（lucide-static v0.544.0）；官方是 24 网格、描边 2，
             // 而本仓图标是 16 网格、此处描边 1.6 ⇒ 整组缩放 16/24（几何一字不改），描边 2.4 缩放后 ≈ 1.6
-            // （0.66667 是 16/24 的六位近似，实算 2.4 × 0.66667 = 1.600008；图形最大坐标是 22 不是 24，这点差值碰不到边界）
+            // （0.66667 是 16/24 的六位近似，实算 2.4 × 0.66667 = 1.600008；图形最大坐标是 21 不是 24，这点差值碰不到边界）
             <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
               <g transform="scale(0.66667)" strokeWidth="2.4">
-                <path d="M12 8V4H8" />
-                <rect width="16" height="12" x="4" y="8" rx="2" />
-                <path d="M2 14h2" />
-                <path d="M20 14h2" />
-                <path d="M15 13v2" />
-                <path d="M9 13v2" />
+                <circle cx="18" cy="5" r="3" />
+                <circle cx="6" cy="12" r="3" />
+                <circle cx="18" cy="19" r="3" />
+                <line x1="8.59" x2="15.42" y1="13.51" y2="17.49" />
+                <line x1="15.41" x2="8.59" y1="6.51" y2="10.49" />
               </g>
             </svg>
           )}

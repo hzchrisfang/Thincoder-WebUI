@@ -15,6 +15,14 @@
  *  （只有嵌套 depth≥1 才经 emitNestedChildEvent 补发射），完成信号走 dispatch 的
  *  onToolResult **第 4 参**（ctx._subagentKey = `role#N`）——没有它同步子代理行会永远 running。
  *
+ * **准入判据（A 案，2026-09-28）：前缀必须被内核协议标记证明，才允许消费/建行。**
+ * 前缀解析是**逐 token 独立**做的（无跨块缓冲），而主线正文/思考里**引用**一个 relay 名
+ * （例如正文写着 `explore#1/read`）时，只要某一块以 `<词>#<数字>/` 开头就会被误当前缀：
+ * 凭空建一行（role = 被劈开的残片，如 `ore` / `oder` / `-coder`）＋ 这一块正文被吞（对话流出现缺口）。
+ * 判据 = `⟦ev⟧…` 事件 / `[model]` 出生声明——内核保证**协议标记恒早于该 key 的任何内容块**
+ * （sync：core/agent-tools/subagent.mjs:337-342；async：subagent-run.mjs:147-149；advisor 同族），
+ * 而幻影文本永远不带标记 ⇒ 未证明且非墓碑的前缀一律按主线放行（见 proven / relayAdmitted）。
+ *
  * 安全红线：只读标量与短数组——**绝不把池条目对象 / childAgent / report 引用存进表**
  * （内核 releaseSettledEntry 的 OOM 教训：条目在消化窗口结束后会置空引用）；
  * 池读取整段 try/catch 静默降级（读不到就当不在池，绝不影响运行）。
@@ -26,6 +34,7 @@
  */
 
 import * as bus from "../lib/bus.mjs"
+import { baseName } from "./watchdog.mjs" // 工具基名归一：**单点**（watchdog 不 import 任何模块，无循环风险）
 
 // ================= 常量（对齐 CLI TUI 的消费口径） =================
 
@@ -195,6 +204,17 @@ function parse(text) {
   try { return relay.parseRelayPath(text) } catch { return null }
 }
 
+/** relay 作用域 = 该文本的**完整前缀链**（`eng-coder#2/explore#1/`；主线文本 → ""）。
+ *  文法仍走内核 `parseRelayPath`（= 原文去掉 `rest` 那一段），绝不自己写第二套正则。
+ *  用途：本地作业（execute / bash）在子代理里的登记与摘除——同一作用域内工具串行，任何后续
+ *  同作用域事件即意味着上个作业已结束（见 `bridge/watchdog.mjs` 的 clearScopeJobs）。 */
+export function relayScopeOf(text) {
+  const path = parse(text)
+  if (!path) return ""
+  const s = String(text)
+  return s.slice(0, s.length - path.rest.length)
+}
+
 // ================= 条目 =================
 
 function splitKey(key) {
@@ -246,6 +266,42 @@ function tombstone(project, key) {
     tombstones.set(project, s)
   }
   s.add(key)
+}
+
+/** **真凭据**（A 案）：key → 已被**内核协议标记**证明是真子代理（`⟦ev⟧…` 事件 / `[model]` 出生声明）。
+ *
+ * 为何必须有它：前缀解析是逐 token 独立做的（无跨块缓冲），而**主线正文/思考里引用一个 relay 名**
+ * （例如正文写着 `explore#1/read`）时，只要某一块恰好以 `<词>#<数字>/` 开头，就会被误当前缀：
+ *  ① 凭空建一行（role 被劈成残片——`ore`/`oder`/`-coder` 这类「异常子代理名」全是这么来的）；
+ *  ② 这一块正文被消费掉 ⇒ 对话流里出现**正文缺口**。
+ * 判据依据（内核契约：**协议标记恒早于该 key 的任何内容块**）：sync 子代理的 `[model]` 由
+ * `armSyncChildAbort` 的 announce 在 registry 写入后宣告、早于 `runChildPipeline`
+ * （core/agent-tools/subagent.mjs:337-342）；async subagent 先发 `⟦ev⟧async` 再发 `[model]`、
+ * 二者都在 `runChildPipeline` 之前（core/agent-tools/subagent-run.mjs:147-149）；advisor / escalate /
+ * consult 同族（makeRelay = 取号 + 出生声明，core/agent/spawn-child.mjs:93-97；advisor-async.mjs:407-411）。
+ * 幻影文本永远不会带标记 ⇒ 「未证明且非墓碑」的前缀一律**不消费、不建行**，按主线正文放行。
+ *
+ * 生命周期与登记表同源：行被移除 / 裁剪 / 整表清空时同步撤凭据（那些 key 的**迟到中继**仍由墓碑
+ * 消费丢弃——旧行为不变，不会因此退回正文）。 */
+const proven = new Map() // project -> Set(key)
+
+function proveKey(project, key) {
+  let s = proven.get(project)
+  if (!s) {
+    s = new Set()
+    proven.set(project, s)
+  }
+  s.add(key)
+}
+
+function unproveKey(project, key) {
+  proven.get(project)?.delete(key)
+}
+
+/** 前缀路由统一准入：已证明（真子代理）∨ 已墓碑（已确认真子代理的迟到中继）⇒ 消费；否则放行主线。
+ * @returns {boolean} false = 调用方**不得**消费该事件（这是「正文缺口」的修复点） */
+function relayAdmitted(project, key) {
+  return proven.get(project)?.has(key) === true || tombstones.get(project)?.has(key) === true
 }
 
 /** 取（或建）条目；已终 key 的迟到 token → null（调用方丢弃，已消费不进会话） */
@@ -355,6 +411,7 @@ export function snapshotStatsAll() {
 function clearTable(project) {
   const had = tables.delete(project)
   tombstones.delete(project)
+  proven.delete(project) // 真凭据随表一起清（会话边界 / 回退 / 移除项目：换会话后历史换了，重名 key 须能重新证明）
   stats.delete(project) // 进度统计随登记表一起归零（「本会话已派发」）
   const timer = timers.get(project)
   if (timer) {
@@ -402,6 +459,11 @@ export function routeToken(project, text) {
   if (!path) return false
   const payload = path.rest
   const nested = path.inner.length > 0
+  // 真凭据：只有内核协议标记（`⟦ev⟧…` / `[model]`）能证明一个 key 是真子代理（A 案）；
+  // 内层标记只证明内层 key，本层不认（外层 key 由它自己的宣告证明）。
+  // 未证明且非墓碑 ⇒ 这不是中继，而是**主线正文里形似前缀的文本**：放行不消费（不建幻影行、不切口）。
+  if (!nested && (payload.startsWith(SENTINEL) || payload.startsWith("[model]"))) proveKey(project, path.head)
+  else if (!relayAdmitted(project, path.head)) return false
   const entry = ensure(project, path.head)
   if (!entry) return true // 已终 key：迟到 token 丢弃（已消费，绝不进会话流）
   const now = Date.now()
@@ -507,6 +569,7 @@ function removeKey(project, key) {
   // 占位行被移除（从未启动的 queued 行）：它没到终局，不得被算进「已结束」——单独记账扣除
   if (e && !TERMINAL.has(e.status)) { const s = statsFor(project, true); if (s) s.removed++ }
   tombstone(project, key) // 移除与墓碑同一守卫（CLI c2：后续迟到 token 不重建幻影条目）
+  unproveKey(project, key) // 凭据同撤（迟到中继仍由墓碑消费丢弃，不因此退回正文）
   flush(project)
 }
 
@@ -521,6 +584,7 @@ function prune(project) {
   for (const e of terminal.slice(0, terminal.length - TERMINAL_LIMIT)) {
     t.delete(e.key)
     tombstone(project, e.key) // 与被裁行同守卫：迟到 token 不复活已裁行
+    unproveKey(project, e.key) // 凭据同撤（与墓碑同生命周期）
   }
 }
 
@@ -560,6 +624,7 @@ export function routeSyncComplete(project, subKey, result) {
 export function routeReasoning(project, text) {
   const path = parse(text)
   if (!path) return false
+  if (!relayAdmitted(project, path.head)) return false // 未证明的前缀形似文本：按主线思考放行
   const entry = ensure(project, path.head)
   if (!entry) return true
   entry.updatedAt = Date.now()
@@ -570,6 +635,7 @@ export function routeReasoning(project, text) {
 export function routeToolCall(project, name, args) {
   const path = parse(name)
   if (!path) return false
+  if (!relayAdmitted(project, path.head)) return false // 未证明的前缀形似工具名：按主线工具卡放行
   const entry = ensure(project, path.head)
   if (!entry) return true
   const tool = path.rest || ""
@@ -589,6 +655,7 @@ export function routeToolCall(project, name, args) {
 export function routeToolResult(project, name, result) {
   const path = parse(name)
   if (!path) return false
+  if (!relayAdmitted(project, path.head)) return false
   const entry = ensure(project, path.head)
   if (!entry) return true
   entry.updatedAt = Date.now()
@@ -599,6 +666,7 @@ export function routeToolResult(project, name, result) {
 export function routeToolOutput(project, name, chunk) {
   const path = parse(name)
   if (!path) return false
+  if (!relayAdmitted(project, path.head)) return false
   const entry = ensure(project, path.head)
   if (!entry) return true
   entry.updatedAt = Date.now()
@@ -915,10 +983,6 @@ function tailText(text, n) {
   const c = s.charCodeAt(0)
   if (c >= 0xdc00 && c <= 0xdfff) s = s.slice(1)
   return s
-}
-
-function baseName(name) {
-  return name.includes("/") ? name.split("/").pop() : name
 }
 
 function collapse(v) {

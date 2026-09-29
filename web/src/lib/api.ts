@@ -184,6 +184,10 @@ export const api = {
     request<{ ok: boolean; summary: RewindSummary }>("/api/rewind/undo", { method: "POST", body: JSON.stringify({ project }) }),
   hostInfo: () => request<{ host: string; port: number | null; lanAddresses: { name: string; address: string }[] }>("/api/host"),
   setHost: (host: string) => request("/api/host", { method: "POST", body: JSON.stringify({ host }) }),
+  // 超时控制（停滞自动中止）开关：默认开；关掉即不再有任何提前中止（热生效，无需重启服务）
+  getWatchdog: () => request<{ enabled: boolean }>("/api/watchdog"),
+  setWatchdog: (enabled: boolean) =>
+    request<{ ok: boolean; enabled: boolean }>("/api/watchdog", { method: "POST", body: JSON.stringify({ enabled }) }),
   tokenInfo: () => request<{ token: string }>("/api/token"),
   // ---- 定时任务（M4） ----
   jobs: () => request<{ jobs: JobInfo[] }>("/api/jobs"),

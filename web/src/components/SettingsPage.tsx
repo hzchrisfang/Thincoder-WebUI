@@ -6,7 +6,7 @@ import LanQR from "./LanQR"
 import ModelSelect from "./ModelSelect"
 import Tooltip, { FloatingTooltip } from "./Tooltip"
 
-/** 设置页 —— 供应商管理 / 子代理模型 / 会诊模型 / embedding / 安全 */
+/** 设置页 —— 供应商管理 / 子代理模型 / 会诊模型 / embedding / 性能（超时控制）/ 安全 */
 export default function SettingsPage({ onProviderChanged }: { onProviderChanged: () => void }) {
   const [cfg, setCfg] = useState<ProvidersConfig | null>(null)
   const [presets, setPresets] = useState<Preset[]>([])
@@ -56,6 +56,9 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
   const [token, setToken] = useState<string | null>(null)
   const [lanAddresses, setLanAddresses] = useState<{ name: string; address: string }[]>([])
 
+  // 性能：超时控制（停滞自动中止）开关（null = 还没读到；服务端默认开）
+  const [watchdog, setWatchdog] = useState<boolean | null>(null)
+
   const load = useCallback(() => {
     api
       .providersConfig()
@@ -71,6 +74,7 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
       setLanAddresses(h.lanAddresses ?? [])
     })
     api.tokenInfo().then((t) => setToken(t.token)).catch(() => {})
+    api.getWatchdog().then((w) => setWatchdog(w.enabled)).catch(() => {})
     api.subagentModels().then(setSubModels).catch(() => {})
     api.consultModels()
       .then((r) => { setConsult(r); setConsultErr(false) })
@@ -352,6 +356,18 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
       await api.setActiveProvider(name, model)
       flash(`主线已切换：${name}${model ? ` · ${model}` : "（渠道当前模型）"}`)
       load()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  /** 超时控制（停滞自动中止）开关：点即落盘（热生效，运行中的回合也不受影响——服务端每跳重读） */
+  const toggleWatchdog = async (enabled: boolean) => {
+    setErr(null)
+    try {
+      await api.setWatchdog(enabled)
+      setWatchdog(enabled)
+      flash(enabled ? "已开启超时控制" : "已关闭超时控制——不再有任何提前中止")
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     }
@@ -847,6 +863,32 @@ export default function SettingsPage({ onProviderChanged }: { onProviderChanged:
             保存
           </button>
         </div>
+      </div>
+
+      {/* ================= 性能（超时控制） ================= */}
+      <h2 className="mb-3 text-sm font-medium text-t1">性能</h2>
+      <div className="mb-7 rounded-xl border border-line bg-surface px-4 py-4">
+        <label className="flex w-fit cursor-pointer items-center gap-2">
+          <input
+            type="checkbox"
+            role="switch"
+            // 与服务端同一条口径：**只有显式 false 才算关**——读到之前（null）不谎报成「关」
+            aria-checked={watchdog !== false}
+            checked={watchdog !== false}
+            disabled={watchdog === null}
+            onChange={(e) => toggleWatchdog(e.target.checked)}
+            className="accent-accent"
+          />
+          <span className="text-xs font-medium text-t1">超时控制</span>
+        </label>
+        <div className="mt-2 text-xs leading-relaxed text-t4">
+          无任何事件达阈值即自动中止本轮（基线 3 分钟；挂起期 10 分钟；定时任务 30 分钟；execute / bash / git / 上下文压缩按各自预算放宽）
+        </div>
+        {watchdog === false && (
+          <div className="mt-2 text-xs leading-relaxed text-t4">
+            关闭后不再有任何提前中止，一切交回内核的超时设置——但内核的上下文压缩与上游 LLM 请求都没有超时设置，真卡住时该项目会一直处于忙时状态，届时只能重启服务。
+          </div>
+        )}
       </div>
 
       {/* ================= 安全 ================= */}

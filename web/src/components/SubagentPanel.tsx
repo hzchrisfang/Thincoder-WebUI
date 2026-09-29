@@ -67,10 +67,12 @@ function subtitleOf(it: SubagentItem): string {
     const pos = typeof it.position === "number" && it.position > 0 ? `第 ${it.position} 位` : ""
     return ["排队中", why, pos].filter(Boolean).join(" · ")
   }
-  if (it.waitingApproval) return `${it.currentTool ?? "工具调用"} · 等待审批`
-  if (it.currentTool) return it.currentTool
-  if (it.lastText) return it.lastText
-  return STATUS_LABEL[it.status] ?? ""
+  // 状态优先（用户裁定 2026-09-29）：小字行 = **状态**，运行中带上**当前工具名**（“正在做什么”），
+  // 不再回落模型输出片段（`lastText`）——那是「活动内容」，它在展开详情的「最近活动」里仍有一份。
+  const label = STATUS_LABEL[it.status] ?? ""
+  if (it.waitingApproval) return [label, it.currentTool ?? "工具调用", "等待审批"].filter(Boolean).join(" · ")
+  if (it.status === "running") return [label, it.currentTool].filter(Boolean).join(" · ")
+  return label
 }
 
 /** 子代理面板（右侧检查器）——服务端分流内核 relay 前缀后的进度登记表 */
@@ -155,13 +157,16 @@ export default function SubagentPanel({ items, stats, onClose }: Props) {
 
                     <span className="min-w-0 flex-1">
                       <span className="flex items-baseline gap-1.5">
-                        <span className={`truncate font-medium ${it.status === "done" ? "text-t3" : "text-t2"}`}>
+                        {/* 名称**不会真被省略**：`shrink-0` 让它不参与收缩（实测旧版与模型名同行竞争时被挤成 `adviso...`），
+                            让位的只能是后面的模型名；`truncate` 类**保留**（既有 UI e2e 按它定位行名，是契约）——
+                            只有在名字确实超过整行宽（极端嵌套名）时才会回退到省略号，`max-w-full` 保证不撑破行。 */}
+                        <span className={`max-w-full shrink-0 truncate font-medium ${it.status === "done" ? "text-t3" : "text-t2"}`}>
                           {it.role}#{it.id}
                         </span>
                         {it.pending && (
                           <span className="shrink-0 rounded-full bg-sky-950 px-1.5 text-[10px] font-medium text-sky-300">待消化</span>
                         )}
-                        {it.model && <span className="truncate text-[10px] text-t4">{it.model}</span>}
+                        {it.model && <span className="min-w-0 truncate text-[10px] text-t4">{it.model}</span>}
                       </span>
                       <span className="mt-0.5 block truncate text-t4">{subtitleOf(it)}</span>
                     </span>

@@ -7,13 +7,18 @@
 
 import { randomUUID } from "node:crypto"
 import * as bus from "../lib/bus.mjs"
-import { listProjects } from "../lib/state.mjs"
+import { listProjects, getWatchdogEnabled } from "../lib/state.mjs"
 import { getAgent, loadThincoder, providerStatus, poolEntries } from "./thincoder.mjs"
 import { diffForTool } from "./diff.mjs"
 import * as rewind from "./rewind.mjs"
 import * as subagents from "./subagents.mjs"
 import { driveSuspension } from "./suspension.mjs"
 import { recordUsage } from "../store/usage.mjs"
+import {
+  STALL_FORCE_MS, WATCH_INTERVAL_MS,
+  armCompressJob, armLocalJob, baseName, clearCompressJob, clearLocalJob, clearScopeJobs,
+  pickStallMs, pruneExpiredJobs, stallNotice, tokenProvesJobEnd,
+} from "./watchdog.mjs"
 
 const states = new Map() // projectDir -> run state
 const pendingPerms = new Map() // reqId -> { resolve, project, name, args }
@@ -32,13 +37,8 @@ export const MODES = ["suggest", "auto-edit", "full-auto"]
 const AUTO_EDIT_AUTO = new Set(["write", "edit", "delete"]) // auto-edit 档免批的工具（基名）
 const RESULT_PREVIEW_LIMIT = 8000
 
-// 看门狗（坑 39/41：内核压缩调用不接 AbortSignal，网络停滞时"停止"叫不动）
-const STALL_MS = Number(process.env.TCW_STALL_MS ?? 180_000) // 无任何事件多久算停滞（默认 3 分钟）
-// 挂起期阈值（D5）：挂起会话没有用户输入，但池里可能长时间在跑超长工具 / 慢首 token / 排队静默
-// ——普通阈值会误杀。判据不变（任何内核回调 touch() 续命），只是窗口放宽到 10 分钟。
-const SUSPEND_STALL_MS = Number(process.env.TCW_SUSPEND_STALL_MS ?? 600_000)
-const STALL_FORCE_MS = Number(process.env.TCW_STALL_FORCE_MS ?? 15_000) // 停滞中止后多久仍未结束 → 强制释放
-const WATCH_INTERVAL_MS = Math.max(1000, Math.min(20_000, Math.floor(STALL_MS / 4)))
+// 看门狗（坑 39/41：内核压缩调用不接 AbortSignal，网络停滞时"停止"叫不动）：阈值梯与停滞文案的
+// 单点权威在 bridge/watchdog.mjs（基线 3 分钟 / 挂起期 10 分钟 / 本地作业豁免三档），本文件只用不定义。
 
 function freshState() {
   return {
@@ -46,8 +46,12 @@ function freshState() {
     // 挂起会话态：suspended = 驱动在跑（busy 保持 true）；suspCounts = 最近一次计数播报
     // （重连快照读它）；suspWake = 驱动等待栓的用户唤醒口（chat 落队列后兑现）
     suspended: false, suspCounts: null, suspWake: null,
-    // 看门狗状态
+    // 看门狗状态（jobs = 在飞的本地作业登记：主线条目按 callId 配对摘除、子代理条目按作用域摘，
+    // 每条自带 until 到期；overdue = 过期但**从未收尾**者的病因留档，只服务停滞文案——
+    // 判据与窗口见 bridge/watchdog.mjs）
     lastEventAt: 0, waitingHuman: false, dead: false, stall: false, deadline: 0, timer: null,
+    jobs: new Map(),
+    overdue: new Map(),
   }
 }
 
@@ -154,7 +158,7 @@ export function decidePermission(reqId, allow, remember) {
   if (!p) return false
   pendingPerms.delete(reqId)
   if (remember && allow) {
-    const base = p.name.includes("/") ? p.name.split("/").pop() : p.name
+    const base = baseName(p.name)
     stateFor(p.project).allowlist.add(base)
   }
   p.resolve(allow)
@@ -234,7 +238,7 @@ export async function openProject(project) {
 // ================= 内部执行 =================
 
 function shouldPrompt(st, fullName) {
-  const base = fullName.includes("/") ? fullName.split("/").pop() : fullName
+  const base = baseName(fullName)
   if (st.mode === "full-auto") return false
   if (st.allowlist.has(base)) return false
   if (st.mode === "auto-edit") return !AUTO_EDIT_AUTO.has(base)
@@ -256,6 +260,8 @@ async function pump(project) {
   st.abort = abortCtrl
   st.lastEventAt = Date.now()
   st.stall = false
+  st.jobs.clear() // 跨轮复用同一 state：本轮从零起算（作业登记与病因留档都不跨回合）
+  st.overdue.clear()
   toolQueues.set(project, new Map())
   armWatchdog(project, st)
 
@@ -302,8 +308,14 @@ async function pump(project) {
       // 死状态（看门狗强释后，见 forceRelease）：本轮一律丢弃——否则被弃用 agent 的迟到中继
       // 会把刚清场的面板行重新「复活」成一条永不收尾的 running
       if (st.dead) return
-      // 带 relay 前缀（子代理中继）的 token 分流进「子代理」面板，不进会话流（心跳照旧）
-      if (subagents.routeToken(project, tok)) { touch(); return }
+      // 带 relay 前缀（子代理中继）的 token 分流进「子代理」面板，不进会话流（心跳照旧）；
+      // 但**摘除闸门**要过 `tokenProvesJobEnd`：`⟦ev⟧approval` 是工具**等待审批**时发的，
+      // 此时该作用域的作业正 pending——拿它当结束信号会让刚登记的作业立刻消失（e2e T7 专钉）。
+      if (subagents.routeToken(project, tok)) {
+        if (tokenProvesJobEnd(tok)) clearScopeJobs(st, subagents.relayScopeOf(tok))
+        touch()
+        return
+      }
       // 兜底：未带前缀的事件 token 是协议控制字符（⟦ev⟧…）——绝不进会话
       if (typeof tok === "string" && tok.startsWith("⟦ev⟧")) { touch(); return }
       touch()
@@ -311,28 +323,41 @@ async function pump(project) {
     },
     onReasoning: (tok) => {
       if (st.dead) return
-      if (subagents.routeReasoning(project, tok)) { touch(); return }
+      if (subagents.routeReasoning(project, tok)) { clearScopeJobs(st, subagents.relayScopeOf(tok)); touch(); return }
       touch()
       bus.emit({ type: "reasoning", project, text: tok })
     },
-    onToolCall: (name, args) => {
+    onToolCall: (name, args, id) => {
       if (st.dead) return
-      if (subagents.routeToolCall(project, name, args)) { touch(); return }
-      touch()
+      const at = Date.now()
+      // 本地作业（execute / bash，含子代理中继的同名调用）需单独登记：该工具**全程无输出**时
+      // 没有任何回调，看门狗无从得知它还在跑。判定与窗口见 bridge/watchdog.mjs。
+      // 顺序：先摘同作用域的旧条目（同作用域内工具串行 ⇒ 新调用 = 旧作业已结束），再登记本次。
+      const scope = subagents.relayScopeOf(name)
+      clearScopeJobs(st, scope)
+      if (!armLocalJob(st, at, scope, id, name, args)) touch() // 命中本地作业：函数内已记心跳
+      if (subagents.routeToolCall(project, name, args)) return
       const callId = randomUUID()
       const queues = toolQueues.get(project)
       if (!queues.has(name)) queues.set(name, [])
       queues.get(name).push(callId)
       // M2：记录 plan 动作，供 tool_result 时判定模式切换与方案捕获
-      const baseForPlan = name.includes("/") ? name.split("/").pop() : name
+      const baseForPlan = baseName(name)
       if (baseForPlan === "plan" && args?.action) planActions.set(project, args.action)
       bus.emit({ type: "tool_call", project, callId, name, args })
     },
     onToolResult: (name, result, toolId, subKey) => {
       if (st.dead) return
+      // 主线条目的本地作业：结果到达即摘（callId 配对——同批兄弟的结果不会误摘，它们是别的 id）
+      clearLocalJob(st, subagents.relayScopeOf(name), toolId)
       // 同步子代理完成信号（dispatch 第 4 参 = `role#N`——depth-0 sync 子代理不发 ⟦ev⟧done，
       // 这是它唯一的完成通道）：只冻面板行，**不消费**主线事件
       subagents.routeSyncComplete(project, subKey, result)
+      // 同步子代理（depth-0）内核**不发** `⟦ev⟧done`——上面那个 `subKey`（onToolResult 第 4 参）就是它唯一的
+      // 收尾信号。此刻该子代理确实已结束 ⇒ 顺手摘掉它作用域的看门狗作业（否则它最后一条静默本地作业
+      // 会留到 `until` 到期进病因留档、被误指成后续上游静默的病因）。幂等：无条目时 no-op；
+      // 嵌套子代理的 scope 是完整前缀链（`eng-coder#2/explore#1/`），本行只覆盖 depth-0。
+      if (subKey) clearScopeJobs(st, `${subKey}/`)
       if (subagents.routeToolResult(project, name, result)) { touch(); return }
       touch()
       const queues = toolQueues.get(project)
@@ -347,7 +372,7 @@ async function pump(project) {
         preview, truncated: result.length > RESULT_PREVIEW_LIMIT, fullLength: result.length,
       })
       // M2：plan 模式切换事件 + 方案捕获（方案文本 = 携带 plan exit 调用的 assistant 消息正文）
-      const base = name.includes("/") ? name.split("/").pop() : name
+      const base = baseName(name)
       if (base === "plan" && !isError) {
         bus.emit({ type: "plan_mode", project, planMode: agent.planMode })
         if (planActions.get(project) === "exit" && !agent.planMode) {
@@ -358,6 +383,9 @@ async function pump(project) {
     },
     onToolOutput: (name, chunk) => {
       if (st.dead) return
+      // 中继（子代理）分支：**只打心跳、不摘同作用域作业**——输出块来自**正在跑的**那个工具
+      // （bash 边跑边吐），不是「后续事件」；若在这里 clearScopeJobs，子代理里「先打印几行再长时间静默」
+      // 的长命令会把自己的豁免摘掉、按基线档被误杀（e2e T6 钉住；主线分支同理，见下一行）。
       if (subagents.routeToolOutput(project, name, chunk)) { touch(); return }
       touch()
       bus.emit({ type: "tool_output", project, name, chunk: String(chunk).slice(0, 4096) })
@@ -368,7 +396,7 @@ async function pump(project) {
       if (!shouldPrompt(st, name)) return Promise.resolve(true)
       const reqId = randomUUID()
       // M1：文件变更类工具预生成 diff，随审批事件下发（失败不阻塞审批）
-      const base = name.includes("/") ? name.split("/").pop() : name
+      const base = baseName(name)
       let diff = null
       if (base === "write" || base === "edit" || base === "delete") {
         diff = diffForTool(base, args, project)
@@ -409,7 +437,11 @@ async function pump(project) {
         })
       } catch { /* 统计失败无碍运行 */ }
     },
-    onCompress: () => { if (!st.dead) { touch(); bus.emit({ type: "compress", project }) } },
+    // 压缩的「开始」是内核在摘要调用**之前**发的唯一信号（该调用按设计静默、无超时）——豁免窗口的
+    // 依据；失败也是事件 ⇒ 打心跳（用户可见面零改：压缩失败仍不上屏，与 onCompress 一样只发成功面）
+    onCompressStart: () => { if (!st.dead) armCompressJob(st, Date.now()) },
+    onCompressFail: () => { if (!st.dead) { clearCompressJob(st); touch() } },
+    onCompress: () => { if (!st.dead) { clearCompressJob(st); touch(); bus.emit({ type: "compress", project }) } },
     onTurnEnd: () => {
       if (st.dead) return
       touch()
@@ -493,7 +525,7 @@ async function pump(project) {
     await runTurn(job, { started: true })
   } finally {
     // 看门狗**不在此处摘**：挂起窗口（下面那段）必须仍有停滞看护——清理权交给 finishSession
-    // （会话真正收尾），阈值由 armWatchdog 按 `st.suspended` 取放宽档（TCW_SUSPEND_STALL_MS）。
+    // （会话真正收尾），阈值由 armWatchdog 按阈值梯取档（挂起期 / 本地作业豁免，见 watchdog.mjs）。
     // 早摘的代价：挂起期（含消化轮自身那条长 LLM 调用）完全失去自动中止，池项永不 settle 时
     // 会话永久 busy（只能手点 Stop）；`st.suspended` 分支也会因定时器已死而恒不可达。
     if (!st.dead) {
@@ -557,15 +589,28 @@ function armWatchdog(project, st) {
       if (st.timer) { clearInterval(st.timer); st.timer = null }
       return
     }
+     // 超时控制开关（设置 → 性能；默认开）——闸门只此一处，热生效（每跳重读偏好，不重启）。
+    // 关闭态：不检测、不中止、不做叫不动时的兜底强释（`st.deadline` 永不启动），一切交回内核超时。
+    // 同时把心跳与停滞态复位：关闭期间 `st.lastEventAt` 会越来越旧、`st.stall` 可能停在真，
+    // 不复位则「关→开」的下一跳会立刻判停滞（甚至直接走强释分支）——就成了「一开就杀」。
+    if (!getWatchdogEnabled()) {
+      const now = Date.now()
+      st.lastEventAt = now
+      st.stall = false
+      st.deadline = 0
+      return
+    }
     if (st.waitingHuman) return // 在等人审批/回答：不是停滞
     const now = Date.now()
-    // 挂起期阈值放宽（D5）：判据不变（任何内核回调 touch() 续命），只是窗口取 SUSPEND_STALL_MS
-    const stallMs = st.suspended ? Math.max(STALL_MS, SUSPEND_STALL_MS) : STALL_MS
+    pruneExpiredJobs(st, now) // 过期作业不再参与判据（纯卫生）
+    // 阈值梯（基线 / 挂起期 / 在飞的本地作业）与停滞文案的单点权威在 bridge/watchdog.mjs：
+    // 判据不变（任何内核回调 touch() 续命），只是窗口按「这段静默里有没有本地作业在跑」取档。
+    const stallMs = pickStallMs(st, now)
     if (!st.stall) {
       if (now - st.lastEventAt < stallMs) return
       st.stall = true
       st.deadline = now + STALL_FORCE_MS
-      bus.emit({ type: "system", project, text: `${stallMs >= 60_000 ? `${Math.round(stallMs / 60000)} 分钟` : `${Math.round(stallMs / 1000)} 秒`}无任何事件（疑似网络/上游停滞），正在自动中止…` })
+      bus.emit({ type: "system", project, text: stallNotice(st, now) })
       try { st.abort?.abort() } catch { /* 忽略 */ }
       return
     }
@@ -591,7 +636,7 @@ function forceRelease(project, st) {
   fresh.allowlist = st.allowlist
   fresh.queue = carry
   states.set(project, fresh)
-  bus.emit({ type: "error", project, message: "运行停滞且中止无效（已知内核压缩调用不接 AbortSignal 的缺陷），已强制释放；下一条消息将自动从上次落盘的会话继续" })
+  bus.emit({ type: "error", project, message: "运行停滞且中止无效（已知内核压缩调用不接 AbortSignal 的缺陷），已强制释放；下一条消息将自动从上次落盘的会话继续（可在设置 → 性能 → 超时控制 中关闭）" })
   // zombie 运行不再走 finishRun（st.dead）——活跃行就地落 ended（终态行保留：面板行是会话级
   // 活动记录），免停在 running/转圈；此后该 agent 的一切回调已被 st.dead 闸门丢弃，不会复活行
   subagents.reconcilePool(project, null)

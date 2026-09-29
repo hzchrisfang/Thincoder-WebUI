@@ -15,6 +15,8 @@ export function loadState() {
     return {
       projects: Array.isArray(s.projects) ? s.projects : [],
       host: typeof s.host === "string" && s.host ? s.host : undefined,
+      // 坑：本函数是**白名单**式搬运——新增偏好键不在这里登记，写了也读不回来（读盘即丢）
+      watchdogEnabled: typeof s.watchdogEnabled === "boolean" ? s.watchdogEnabled : undefined,
     }
   } catch {
     return { projects: [] }
@@ -57,5 +59,16 @@ export function getHost() {
 export function setHost(host) {
   const s = loadState()
   s.host = host
+  saveState(s)
+}
+
+/** 超时控制（停滞自动中止/看门狗）偏好：**只有显式 false 才算关**——缺键/非布尔一律当开（= 默认行为） */
+export function getWatchdogEnabled() {
+  return loadState().watchdogEnabled !== false
+}
+
+export function setWatchdogEnabled(enabled) {
+  const s = loadState()
+  s.watchdogEnabled = Boolean(enabled)
   saveState(s)
 }
