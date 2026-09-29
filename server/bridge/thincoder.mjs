@@ -25,8 +25,14 @@ const require = createRequire(import.meta.url)
 
 let tc = null // 模块集合缓存
 
-/** loadConfig() merged 独有、内核不消费的派生键——写盘即脏数据（运行期每次重新派生）。
- *  历史上 WebUI 的 saveConfig(loadConfig()) 全量落盘把它们写进过真机 config.json，此表同时负责清残留。 */
+/** loadConfig() merged 独有、**不落盘**的派生键（写盘即脏数据——运行期每次重新派生）。
+ *  历史上 WebUI 的 saveConfig(loadConfig()) 全量落盘把它们写进过真机 config.json，此表同时负责清残留。
+ *
+ *  ⚠️ 「不落盘」≠「内核不消费」：`providersList` 正是内核**子代理解析**的读取面
+ *  （`core/agent-tools/subagent-async.mjs:149` 的 `parent.config?.providersList`）。
+ *  ⇒ 运行期它必须与 `agent.providers`、`config.providers` 保持**同一数组**（装配期的别名不变量，
+ *  见 `core/config.mjs` 的 `merged.providersList = merged.providers`）；池内换表时由
+ *  `routes.mjs` 的 `setPoolProviderTable` 复位。 */
 const DERIVED_CONFIG_KEYS = ["provider", "providersList", "providerInvalidReason", "advisor"]
 
 /** 解析 @thincoder/core 安装目录：优先本地 node_modules，回退全局 thincoder 内嵌 */

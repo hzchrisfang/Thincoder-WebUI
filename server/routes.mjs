@@ -504,7 +504,8 @@ async function handleApi(req, res, url) {
       for (const entry of poolEntries().values()) {
         // 会诊/飞刀候选池同源同步（同上面子代理的道理：内核逐轮重注册，只改磁盘不够）
         if (entry.agent.config?.agent) dropConsultModelsOf(entry.agent.config.agent, name)
-        entry.agent.providers = (entry.agent.providers ?? []).filter((x) => x.name !== name)
+        // 换表 ⇒ 经 helper 复位别名（同 upsertProvider）：否则已删渠道仍留在内核解析表里（连 apiKey 一起）继续可派发
+        setPoolProviderTable(entry, (entry.agent.providers ?? []).filter((x) => x.name !== name))
         if (entry.agent.provider?.name === name) {
           const next = entry.agent.providers.find((x) => x.name === fallbackName) ?? entry.agent.providers[0]
           if (next) {
@@ -1252,7 +1253,9 @@ function upsertProvider(t, { name, baseURL, apiKey, model }) {
     let pp = entry.agent.providers?.find((x) => x.name === name)
     if (!pp) {
       pp = { name, baseURL, apiKey: apiKey ?? "", model }
-      entry.agent.providers = [...(entry.agent.providers ?? []), pp]
+      // 换表 ⇒ 必须经 helper 复位别名，否则内核子代理解析（读 config.providersList）看不到这个新渠道：
+      // 设置页会放行（校验读磁盘新鲜盘），派发却报 unknown provider。
+      setPoolProviderTable(entry, [...(entry.agent.providers ?? []), pp])
     } else {
       Object.assign(pp, { baseURL, model })
       if (apiKey) pp.apiKey = apiKey
@@ -1284,7 +1287,7 @@ export function setActiveProvider(t, name, model = null) {
     let pp = entry.agent.providers?.find((x) => x.name === name)
     if (!pp) {
       pp = { ...found }
-      entry.agent.providers = [...(entry.agent.providers ?? []), pp]
+      setPoolProviderTable(entry, [...(entry.agent.providers ?? []), pp]) // 换表 ⇒ 经 helper 复位别名（同 upsertProvider）
     }
     pp.model = effModel // 池内渠道条目同步跟随（列表显示 / 顶栏菜单选项的数据源）
     entry.agent.provider = { ...pp }
@@ -1445,6 +1448,30 @@ export async function writeSubagentModelPatch(t, { values }) {
   })
   if (!r?.ok) throw new Error("config changed on disk concurrently — retry")
   syncSubagentModelPatchToPool({ values })
+}
+
+/** 复位「provider 表三名一数组」不变量（**池内热同步凡【替换】这张表都必须经此**）。
+ *
+ *  不变量于装配期建立：内核 `core/config.mjs` 的 `merged.providersList = merged.providers` 是**同一引用**，
+ *  而 `bridge/thincoder.mjs` 又把同一数组赋给 `agent.providers` ⇒
+ *      entry.agent.providers === entry.agent.config.providers === entry.agent.config.providersList
+ *
+ *  为何必须复位：内核**子代理解析**读的正是派生键 `parent.config.providersList`
+ *  （`core/agent-tools/subagent-async.mjs:149`，渠道名找不到即在 `:154` 抛 `unknown provider`）。
+ *  只换 `agent.providers` 会留下两个**静默**缺陷：
+ *    · 新增渠道 ⇒ 设置页校验读的是磁盘新鲜盘、于是放行（validateSubagentModelPatch），
+ *      但代派子代理/会诊当场报 `unknown provider`，且持续整个进程生命周期（非竞态）；
+ *    · 删除渠道 ⇒ 旧条目（连同其 apiKey）仍在解析表里，`已删渠道:model` **能悄悄跑起来**。
+ *
+ *  只在**替换**数组时调用；就地改对象（`Object.assign`）不破别名、无需调用。
+ *  内存里补这两个派生键**不会脏盘**：saveConfig 兼容层按 `DERIVED_CONFIG_KEYS` 在写前剔除
+ *  （`bridge/thincoder.mjs`），并顺带清磁盘残留。 */
+function setPoolProviderTable(entry, next) {
+  entry.agent.providers = next
+  const cfg = entry.agent.config
+  if (!cfg) return
+  cfg.providers = next
+  cfg.providersList = next
 }
 
 /** 把「子代理角色槽 + 审阅档」的单字段补丁同步进**实例池内存**（磁盘写完之后的内存第二步，不落盘）。
