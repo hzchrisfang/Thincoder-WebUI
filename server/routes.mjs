@@ -177,6 +177,7 @@ async function handleApi(req, res, url) {
       const dir = normalizePath(body.dir)
       if (!runner.isKnownProject(dir)) return json(res, 403, { error: "项目未在白名单中" })
       if (runner.isBusy(dir)) return json(res, 409, { error: "该项目有任务运行中，无法移除" })
+      runner.setFast(dir, false) // 会话边界：项目移除后状态对象仍在内存里，不解除会残留到重新添加之后
       // 以下三步同步执行（原子）：清队列 → 弃内存 agent（内含未落盘历史，防止写回已删会话）→ 移出白名单（挡住新 chat）
       runner.clearQueue(dir)
       poolEntries().delete(dir)
@@ -308,6 +309,7 @@ async function handleApi(req, res, url) {
       const dir = normalizePath(body.project)
       if (!runner.isKnownProject(dir)) return json(res, 403, { error: "项目未在白名单中" })
       if (runner.isBusy(dir)) return json(res, 409, { error: "运行中，无法新建会话" })
+      runner.setFast(dir, false) // 会话边界：解除极速武装（否则切了会话，下一条消息仍意外走极速轮）
       await sessions.newSession(dir)
       rewind.resetProject(dir)
       bus.emit({ type: "session_changed", project: dir, reason: "new" })
@@ -324,10 +326,25 @@ async function handleApi(req, res, url) {
       const args = Array.isArray(body.args) ? body.args.map(String) : []
       // /new：复用现有新建会话链路（等价 TUI /new：归档旧槽 + 重置回退栈）
       if (command === "new") {
+        runner.setFast(dir, false) // 会话边界：解除极速武装（否则切了会话，下一条消息仍意外走极速轮）
         await sessions.newSession(dir)
         rewind.resetProject(dir)
         bus.emit({ type: "session_changed", project: dir, reason: "new" })
         return json(res, 200, { ok: true, lines: ["已新建会话（原会话归档）"] })
+      }
+      // /fast：极速模式（**WebUI 原生命令**——内核没有这条，所以不走 runSlashCommand）。
+      // 设位语义：body.armed 是布尔 = **显式设定**（前端 × 按钮走这条，避免「切换」把意图弄反：
+      // 徽标过期时点 × 会反向武装）；缺省 = 切换（输入框发 /fast 的自然手感）。
+      // 响应文案取自**调用后的真实状态**，不用 setFast 的返回值——运行中（fastActive）那条防御
+      // 分支的返回值不代表状态已变，拿它播报会得到与实际互斥的提示。
+      if (command === "fast") {
+        const want = typeof body.armed === "boolean" ? body.armed : !runner.isFast(dir)
+        runner.setFast(dir, want)
+        const armed = runner.isFast(dir)
+        return json(res, 200, {
+          ok: true,
+          lines: [armed ? "已开启极速模式：下一条消息以极速模式运行，单轮结束自动退出" : "已关闭极速模式"],
+        })
       }
       // /goal 无参在 TUI 里是交互 picker——Web 降级为查看当前目标
       if (command === "goal" && args.length === 0) args.push("view")
@@ -358,6 +375,7 @@ async function handleApi(req, res, url) {
       const dir = normalizePath(body.project)
       if (!runner.isKnownProject(dir)) return json(res, 403, { error: "项目未在白名单中" })
       if (runner.isBusy(dir)) return json(res, 409, { error: "运行中，无法切换会话" })
+      runner.setFast(dir, false) // 会话边界：解除极速武装（当前项目）——同上
       await sessions.switchSession(dir, body.slot)
       rewind.resetProject(dir)
       bus.emit({ type: "session_changed", project: dir, reason: "switch", slot: Number(body.slot) })
@@ -912,6 +930,7 @@ async function handleApi(req, res, url) {
       const dir = normalizePath(body.project)
       if (!runner.isKnownProject(dir)) return json(res, 403, { error: "项目未在白名单中" })
       if (runner.isBusy(dir)) return json(res, 409, { error: "运行中，无法回退（文件可能正在被修改）" })
+      runner.setFast(dir, false) // 会话边界：回退会改写会话/工作区，武装态不得跨过它
       // 独占项目：挡住在回退过程中新到达的消息，并摘走待发队列（回退后它们对应的状态已不存在）
       const exclusive = runner.beginExclusive(dir)
       if (!exclusive) return json(res, 409, { error: "运行中，无法回退" })
@@ -932,6 +951,7 @@ async function handleApi(req, res, url) {
       const dir = normalizePath(body.project)
       if (!runner.isKnownProject(dir)) return json(res, 403, { error: "项目未在白名单中" })
       if (runner.isBusy(dir)) return json(res, 409, { error: "运行中，无法撤销回退" })
+      runner.setFast(dir, false) // 会话边界：同上（撤销回退也是会话回退）
       const exclusive = runner.beginExclusive(dir)
       if (!exclusive) return json(res, 409, { error: "运行中，无法撤销回退" })
       let summary

@@ -1,9 +1,13 @@
 /**
  * lib/commands.ts — 斜线命令表（WebUI 侧）
  *
- * 命令语义全部由内核 TUI 处理器承担（服务端 /api/command → 薄壳 cmd-*.mjs），
+ * 命令语义由内核 TUI 处理器承担（服务端 /api/command → 薄壳 cmd-*.mjs），
  * 这里只描述「有哪些命令、怎么显示、要不要先收参数」。
  * 加新命令的正确做法：内核 cmd-*.mjs 有了处理器 → 服务端 slashCommands 表登记 → 本表加一行。
+ *
+ * **例外 = WebUI 原生命令**：`/new`（新建会话）与 `/fast`（极速模式）内核没有对应处理器，
+ * 由 `server/routes.mjs` 的 `/api/command` 内联分支实现；它们在本表登记只为进斜线菜单
+ * 与 parseSlash 白名单（否则 `/fast` 会被当成普通消息发给模型）。
  */
 
 export interface SlashCommand {
@@ -18,6 +22,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "plan", desc: "切换 Plan 模式（只读探索，方案确认前不改文件）" },
   { name: "new", desc: "新建会话（当前会话自动归档）" },
   { name: "eng", desc: "切换工程模式（设计评审 → 用户批准 → 实施）" },
+  { name: "fast", desc: "极速模式：本轮省略仪式动作，单轮生效（临时 Full Auto + 超时控制）" },
   { name: "goal", desc: "长期目标：查看 / 设定 / 取消", takesArgs: true },
   { name: "skills", desc: "列出项目技能（.thincoder/skills/）" },
   { name: "init", desc: "生成 AGENTS.md 骨架" },

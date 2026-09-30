@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { api, ApiError } from "./lib/api"
-import type { ApprovalMode, ConsultReportEvent, PendingApproval, PendingRequest, ProviderStatus, RewindSummary, RunEvent, ServerEvent, Snapshot, SubagentItem, SubagentReportEvent, SubagentStats, SubagentsUpdateEvent, SuspensionCounts, SuspensionEvent, ThinkingInfo, TimelineItem } from "./lib/types"
+import type { ApprovalMode, ConsultReportEvent, FastEvent, PendingApproval, PendingRequest, ProviderStatus, RewindSummary, RunEvent, ServerEvent, Snapshot, SubagentItem, SubagentReportEvent, SubagentStats, SubagentsUpdateEvent, SuspensionCounts, SuspensionEvent, ThinkingInfo, TimelineItem } from "./lib/types"
 import TopBar from "./components/TopBar"
 import Timeline from "./components/Timeline"
 import Composer from "./components/Composer"
@@ -88,6 +88,9 @@ export default function App() {
   const [running, setRunning] = useState(false)
   const [queued, setQueued] = useState(0)
   const [mode, setModeState] = useState<ApprovalMode>("suggest")
+  // 极速模式（单轮，`/fast`）：武装中或本轮正在跑（语义见 lib/commands.ts 与 Composer 徽标）；
+  // 只认服务端的 fast 事件与快照（前端不做任何猜测性复位）
+  const [fast, setFastState] = useState(false)
   const [usage, setUsage] = useState({ prompt: 0, completion: 0 })
   // 当前这一轮运行的 token 累计（run_start 清零，run_end 随总结项落进时间线）
   const runUsageRef = useRef({ prompt: 0, completion: 0 })
@@ -118,6 +121,10 @@ export default function App() {
   // 各项目运行状态（跨项目并行：历史面板为所有运行中的项目显示指示器）
   const [busyMap, setBusyMap] = useState<Record<string, boolean>>({})
   const busyMapRef = useRef<Record<string, boolean>>({})
+  // 极速武装态（全项目）：`fast` 只是**当前项目**的派生值，切项目必须能就地取到本项目那格
+  // （否则 B 项目会沿用 A 的徽标，而过期的徽标点 × 会做出与标签相反的动作）。ref 即可：
+  // 只有当前项目那格参与渲染（与 busyMapRef 同口径，后者也只靠 ref 供切换时读取）。
+  const fastMapRef = useRef<Record<string, boolean>>({})
   // 挂起会话（后台池仍 live：会话仍忙，但当前无用户回合）：suspMap 管全项目——事件期读 ref、
   // 渲染读 state，当前项目的挂起态与计数由它派生（唯一事实源，不另存一份）
   const [suspMap, setSuspMap] = useState<Record<string, SuspEntry | null>>({})
@@ -204,9 +211,11 @@ export default function App() {
       const snap = ev as unknown as Snapshot & ServerEvent
       setProjects(snap.projects)
       const bm: Record<string, boolean> = {}
+      const fm: Record<string, boolean> = {}
       const sm: Record<string, SuspEntry | null> = {}
       for (const [dir, st] of Object.entries(snap.active ?? {})) {
         bm[dir] = Boolean(st?.busy)
+        fm[dir] = Boolean(st?.fast)
         // 挂起态随快照播种：挂起期 busy 已由服务端置真，重连后的显示与 409 闸门保持一致
         sm[dir] = st?.suspended ? { counts: st.counts ?? null } : null
         // 已在运行的项目（如刷新后重连）：开始时刻未知，记为当前时刻——
@@ -215,6 +224,7 @@ export default function App() {
       }
       busyMapRef.current = bm
       setBusyMap(bm)
+      fastMapRef.current = fm
       suspMapRef.current = sm
       setSuspMap(sm)
       const cur = projectRef.current
@@ -223,6 +233,7 @@ export default function App() {
         setRunning(st?.busy ?? false)
         setQueued(st?.queued ?? 0)
         if (st?.mode) setModeState(st.mode)
+        setFastState(Boolean(st?.fast))
         setPlanMode(Boolean(st?.planMode))
         if (st?.provider) setProvider(st.provider)
         setSubagents(snap.subagents?.[cur] ?? []) // 子代理面板播种（刷新/重连时恢复）
@@ -234,6 +245,7 @@ export default function App() {
           reqType: "approval" as const,
           ...p,
           mode: snap.active[p.project]?.mode ?? ("suggest" as ApprovalMode),
+          fast: Boolean(snap.active[p.project]?.fast),
         })),
         ...snap.pendingQuestions.map((q) => ({ reqType: "question" as const, ...q })),
       ])
@@ -322,6 +334,16 @@ export default function App() {
       }
       return
     }
+    // 极速武装态**不按项目过滤**（与 busyMap 同口径）：映射要记住**每个**项目的真实态——否则
+    // 「在别的项目里发生的解除」会被下面的项目过滤器丢掉，切回来就是一枚过期的徽标（服务端早已解除）。
+    // 只有当前项目才刷 state（渲染面只有它）。
+    if (ev.type === "fast") {
+      const fe = ev as unknown as FastEvent
+      fastMapRef.current = { ...fastMapRef.current, [fe.project]: Boolean(fe.armed) }
+      if (fe.project === projectRef.current) setFastState(Boolean(fe.armed))
+      return
+    }
+
     if (ev.project && ev.project !== projectRef.current) return
 
     switch (ev.type) {
@@ -670,6 +692,9 @@ export default function App() {
     // 运行状态跟随项目：snapshot 仅在 SSE 建连时下发，切换项目必须就地纠正，
     // 否则沿用上个项目的 running（busyMap 已由 snapshot + run_start/run_end 维护全项目状态）
     setRunning(Boolean(busyMapRef.current[dir]))
+    // 极速徽标同口径：切项目必须就地取本项目那格（否则沿用上个项目的徽标，而徽标 × 是设位命令，
+    // 过期徽标上的 × 会反向武装本项目）
+    setFastState(Boolean(fastMapRef.current[dir]))
     setQueued(0)
     commit([])
     closeStream() // 切项目：时间线已清空，流指针一并了结（不留 done:false 残条）
@@ -854,7 +879,11 @@ export default function App() {
     // 未注册的 /xxx（如绝对路径 /Users/…）原样按普通消息发送
     const cmd = parseSlash(text)
     if (cmd) {
-      pushItem({ kind: "user", id: uid(), text: `/${cmd.name}${cmd.args.length ? ` ${cmd.args.join(" ")}` : ""}`, ts: Date.now() })
+      // `/fast` 不回显气泡（**有意收窄**，与 /plan、/eng 等不同）：它不是一条会进 agent 历史的对话消息，
+      // 回显出来的那一条在会话里并不存在（刷新即消失）；提示由下面 r.lines 的 notice 承担。
+      if (cmd.name !== "fast") {
+        pushItem({ kind: "user", id: uid(), text: `/${cmd.name}${cmd.args.length ? ` ${cmd.args.join(" ")}` : ""}`, ts: Date.now() })
+      }
       try {
         const r = await api.command(project, cmd.name, cmd.args)
         if (r.ok && cmd.name === "new") {
@@ -883,6 +912,19 @@ export default function App() {
     if (!project) return
     setModeState(m)
     api.setMode(project, m).catch((e) => notice("error", `切换模式失败：${e.message}`))
+  }
+
+  /** 徽标 × = 取消极速模式：与服务端同一个切换命令（`/fast` 再发一次即取消），
+   *  **不走 send()**——它不是一条对话消息，不该在时间线上留下用户气泡。 */
+  const cancelFast = () => {
+    const dir = projectRef.current
+    if (!dir) return
+    api
+      .command(dir, "fast", [], false) // 显式撤装（不是切换）：徽标万一过期，切换语义会反向武装本项目
+      .then((r) => {
+        for (const line of r.lines) notice(r.ok ? "info" : "error", line)
+      })
+      .catch((e) => notice("error", `取消极速模式失败：${e instanceof Error ? e.message : String(e)}`))
   }
 
   /** 添加项目：打开目录浏览弹窗（资源管理器选目录，替代手填绝对路径） */
@@ -1136,6 +1178,8 @@ export default function App() {
                   queued={queued}
                   onSubmit={send}
                   onAbort={stop}
+                  fast={fast}
+                  onFastCancel={cancelFast}
                   project={project}
                   prefill={prefill} onPrefillTaken={() => setPrefill(null)}
                 />

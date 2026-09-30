@@ -309,11 +309,13 @@ export const api = {
       startedAt: number | null
       finishedAt: number | null
     }>("/api/webui-update-status"),
-  /** 斜线命令：服务端执行内核 TUI 处理器，返回其输出行（见 lib/commands.ts） */
-  command: (project: string, command: string, args: string[] = []) =>
+  /** 斜线命令：服务端执行内核 TUI 处理器，返回其输出行（见 lib/commands.ts）。
+   *  `armed` 只对 `/fast` 有意义：布尔 = **显式设位**（徽标 × 用它撤装，避免「切换」语义把意图弄反）；
+   *  缺省 = 切换（输入框发 `/fast` 的自然手感）。 */
+  command: (project: string, command: string, args: string[] = [], armed?: boolean) =>
     request<{ ok: boolean; lines: string[] }>("/api/command", {
       method: "POST",
-      body: JSON.stringify({ project, command, args }),
+      body: JSON.stringify({ project, command, args, ...(typeof armed === "boolean" ? { armed } : {}) }),
     }),
   /** 一轮结束后自动生成的追问建议（服务端旁路小调用；失败/无内容返回空数组） */
   suggest: (project: string, payload: { user: string; assistant: string; planMode?: boolean }) =>

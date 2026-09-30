@@ -13,6 +13,7 @@ import { diffForTool } from "./diff.mjs"
 import * as rewind from "./rewind.mjs"
 import * as subagents from "./subagents.mjs"
 import { driveSuspension } from "./suspension.mjs"
+import { injectFastReminder, removeFastReminder } from "./fast-mode.mjs"
 import { recordUsage } from "../store/usage.mjs"
 import {
   STALL_FORCE_MS, WATCH_INTERVAL_MS,
@@ -43,6 +44,14 @@ const RESULT_PREVIEW_LIMIT = 8000
 function freshState() {
   return {
     busy: false, queue: [], abort: null, mode: "suggest", allowlist: new Set(),
+    // 极速模式（单轮，用户用 /fast 授权；语义与文案见 bridge/fast-mode.mjs）——两态：
+    //   fastArmed             = 已武装，等下一轮消费（此时**尚未**注入提醒）
+    //   fastActive            = 本轮正在极速跑（轮首由 fastArmed 转入，轮末解除）
+    //   modeBeforeFast        = 武装前的档位 = 「设置里的档位」（退出时恢复的目标）
+    //   modeTouchedDuringFast = 极速期间用户手点改过档（真 ⇒ 退出时不覆盖用户的新选择）
+    // 生命周期：轮首消费（armed → active）→ 轮末解除（endFastTurn）。两态分开的原因：挂起窗口里
+    // 消费队列的是同一会话的**另一个用户回合**——它绝不许继承极速（否则未授权的消息免审批开跑）。
+    fastArmed: false, fastActive: false, modeBeforeFast: null, modeTouchedDuringFast: false,
     // 挂起会话态：suspended = 驱动在跑（busy 保持 true）；suspCounts = 最近一次计数播报
     // （重连快照读它）；suspWake = 驱动等待栓的用户唤醒口（chat 落队列后兑现）
     suspended: false, suspCounts: null, suspWake: null,
@@ -143,14 +152,92 @@ export function isBusy(project) {
   return states.get(project)?.busy ?? false
 }
 
-export function setMode(project, mode) {
-  if (!MODES.includes(mode)) return false
-  const st = stateFor(project)
+/**
+ * 档位落定（唯一落点）：写 st.mode + 同步池内 agent 的 autoApprove（审批档的内核面）+ 广播。
+ * `internal` = 由极速模式自己驱动（进入/退出）：此时**不算**「用户手点改档」——否则退出恢复会把
+ * 极速自己写的那次 full-auto 误记成用户意愿，modeBeforeFast 就永远回不去。
+ */
+function applyMode(project, st, mode, { internal } = {}) {
   st.mode = mode
   const entry = poolEntries().get(project)
   if (entry) entry.agent.autoApprove = mode === "full-auto"
   bus.emit({ type: "mode", project, mode })
+  if (!internal && fastShown(st)) st.modeTouchedDuringFast = true
+}
+
+export function setMode(project, mode) {
+  if (!MODES.includes(mode)) return false
+  const st = stateFor(project)
+  applyMode(project, st, mode)
   return true
+}
+
+/** 极速武装态广播（单点）：setFast / 轮末解除 / 强释路径共用——状态变了就必须广播，客户端只认事件。 */
+function emitFast(project, armed) {
+  bus.emit({ type: "fast", project, armed })
+}
+
+/** 对外可见的极速态（武装中或正在跑都该点亮徽标；口径与 snapshot().fast 一致）。
+ *  注意消费时机：applyMode 的「用户手点改档」判定必须看这个合计值、而不是 st.fastArmed——
+ *  轮中 fastArmed 已转 fastActive，只看 armed 会把用户的档位选择当成无效并在轮末覆盖。 */
+function fastShown(st) {
+  return Boolean(st?.fastArmed || st?.fastActive)
+}
+
+/**
+ * 极速轮收尾（**唯一解除点**：runTurn 的轮末 finally；另供 finishSession 做异常路径的防御性清理）。
+ * 摘提醒 → 恢复档位（用户手点过就不覆盖）→ 清元数据 → 广播 armed:false。
+ * `t` 在场（轮末正常路径）时**补一次落盘**：机读线 contextHistory 会保留 transient（core/session.mjs:116），
+ * 必须用摘净后的历史重写槽文件——否则陈旧提醒会在会话恢复后（恢复时原样装回机器线）此后每一轮都发给模型。
+ */
+function endFastTurn(project, st, t = null, agent = null) {
+  if (!st.fastArmed && !st.fastActive) return
+  st.fastArmed = false
+  st.fastActive = false
+  const live = agent ?? poolEntries().get(project)?.agent
+  removeFastReminder(live)
+  if (!st.modeTouchedDuringFast && MODES.includes(st.modeBeforeFast)) {
+    applyMode(project, st, st.modeBeforeFast, { internal: true })
+  }
+  st.modeBeforeFast = null
+  st.modeTouchedDuringFast = false
+  emitFast(project, false)
+  if (t && live) saveSessionSafe(t, live, project)
+}
+
+/**
+ * 极速模式（单轮）——用户授权的提速档（WebUI 侧内存态，零内核改动；文案见 bridge/fast-mode.mjs）。
+ *
+ * armed=true：幂等。首次武装记住当前档位（= 「设置里的档位」：WebUI 的 mode 是每项目内存态、
+ *   新会话回 suggest），临时把审批档推到 full-auto（本轮免审批）并令看门狗强制启用（armWatchdog 闸门）；
+ *   **此时还没注入提醒**——下一条消息（用户回合）在轮首消费、轮末解除。
+ * armed=false：用户撤装（或会话边界清除）。已武装未跑 ⇒ 立即兑现退出（恢复档位 + 摘提醒 + 广播）；
+ *   正在跑（fastActive）⇒ 只清武装位，档位/提醒交给该轮轮末的 endFastTurn（运行中该命令本就
+ *   被 /api/command 的 409 挡住，这条只是防御）。
+ * 两向都**不写任何全局偏好**（审批档/看门狗一律仅本项目本轮的内存态，不落 state.json）。
+ * 返回生效后的武装位（armed）。
+ */
+export function setFast(project, armed) {
+  const st = stateFor(project)
+  if (armed) {
+    if (!st.fastArmed && !st.fastActive) {
+      st.modeBeforeFast = st.mode
+      st.modeTouchedDuringFast = false
+      st.fastArmed = true
+      applyMode(project, st, "full-auto", { internal: true })
+    }
+    emitFast(project, fastShown(st))
+  } else if (st.fastActive) {
+    st.fastArmed = false // 正在跑：档位/提醒交给该轮轮末的 endFastTurn
+  } else {
+    endFastTurn(project, st) // 已武装未跑（或本就非极速）：立即兑现退出（内部 early-return + 广播）
+  }
+  return st.fastArmed
+}
+
+/** 该项目当前是否处于极速模式（武装中或正在跑；未建状态的项目 = false） */
+export function isFast(project) {
+  return fastShown(states.get(project))
 }
 
 export function decidePermission(reqId, allow, remember) {
@@ -207,6 +294,7 @@ export function snapshot() {
       busy: st?.busy ?? false,
       queued: st?.queue.length ?? 0,
       mode: st?.mode ?? "suggest",
+      fast: !!(st?.fastArmed || st?.fastActive),
       planMode: entry?.agent.planMode ?? false,
       provider: entry ? providerStatus(entry) : null,
       // 挂起会话态（重连一致性：挂起期 busy 必为 true，否则前端显空闲、服务端 409 闸门与显示不一致）
@@ -477,7 +565,14 @@ async function pump(project) {
     const signal = st.abort?.signal ?? abortCtrl.signal
     const base = { signal, autoTurn: digest, upstreamTurn, suspDriven: canSuspend }
     if (!digest) {
+      // 极速轮的两端都在这里：**轮首消费**（armed → active）+ 紧随其后的**自愈摘除**——
+      // 先无条件摘掉历史里可能存在的提醒（上一轮若崩在极速轮里，机读线会把陈旧提醒装回历史），
+      // 于是不变量成立：历史里有该提醒 ⇔ 正在极速轮中，且每轮至多一条。
+      if (st.fastArmed) { st.fastArmed = false; st.fastActive = true }
+      removeFastReminder(agent)
       try {
+        // 极速模式提醒：本轮唯一注入点（瞬时注入，不进时间线；见 bridge/fast-mode.mjs）
+        if (st.fastActive) injectFastReminder(agent)
         await t.agent.runAgent(agent, j.text, callbacks, base)
         if (!st.dead) bus.emit({ type: "done", project })
       } catch (err) {
@@ -491,6 +586,9 @@ async function pump(project) {
           // 还不知道会不会挂起（所以前端单靠 `!suspended` 挡不住这条）。
           const suspending = canSuspend && t.suspension.poolLive(agent)
           finishTurn(project, st, agent, false, suspending)
+          // **轮末解除**（唯一解除点）：必须赶在挂起驱动之前——挂起窗口里消费队列的是同一会话的
+          // 另一个用户回合，它不得继承极速（无注入、档位已回设置值、看门狗闸门回全局偏好）。
+          endFastTurn(project, st, t, agent)
         }
       }
       return
@@ -578,6 +676,8 @@ function finishSession(project, st) {
   for (const hook of runEndHooks) {
     try { hook(project) } catch { /* 收尾钩子失败不阻塞队列 */ }
   }
+  // 极速防御性清理（正常路径已在 runTurn 的轮末 finally 解除）：异常/早退路径不得留下脏值
+  if (st.fastArmed || st.fastActive) endFastTurn(project, st)
   if (st.queue.length > 0) setImmediate(() => pump(project))
 }
 
@@ -593,7 +693,9 @@ function armWatchdog(project, st) {
     // 关闭态：不检测、不中止、不做叫不动时的兜底强释（`st.deadline` 永不启动），一切交回内核超时。
     // 同时把心跳与停滞态复位：关闭期间 `st.lastEventAt` 会越来越旧、`st.stall` 可能停在真，
     // 不复位则「关→开」的下一跳会立刻判停滞（甚至直接走强释分支）——就成了「一开就杀」。
-    if (!getWatchdogEnabled()) {
+    // 极速轮强制启用（本批新语义）：不看全局偏好，极速的那一轮必须有停滞看护（武装未跑时无影响：
+    // 看门狗只在 busy 时跳）。只影响本轮、热生效（每跳重读两态，不改全局开关、不落盘），退出即回设置值。
+    if (!(st.fastArmed || st.fastActive || getWatchdogEnabled())) {
       const now = Date.now()
       st.lastEventAt = now
       st.stall = false
@@ -630,12 +732,23 @@ function forceRelease(project, st) {
   st.suspWake?.()
   const carry = st.queue.slice()
   st.queue.length = 0
+  // 极速解除的另一半（摘提醒）必须赶在弃用池项之前——被弃的 agent 活历史里仍留着本轮提醒
+  if (st.fastArmed || st.fastActive) removeFastReminder(poolEntries().get(project)?.agent)
   poolEntries().delete(project) // 弃用卡死 agent；下个 run 会 getAgent 重建并从落盘会话恢复
   const fresh = freshState()
-  fresh.mode = st.mode
+  // 档位算法：本轮已死 ⇒ freshState 不继承 fast 两态（默认 false），但退出恢复要替它兑现——
+  // 极速轮期间（**含「已武装、尚未轮首消费」那一小段**：武装时 st.mode 已被推成 full-auto）没被用户
+  // 手点改档 ⇒ 恢复 modeBeforeFast（= 「设置里的档位」），否则保留 st.mode。
+  // 判据与 endFastTurn 的两态同源（:194）——只看 fastActive 会让「武装后立刻强释」把档位永久停在 full-auto。
+  // （池项已被丢弃，autoApprove 由下次 getAgent 重建，属既有行为，本批不改。）
+  fresh.mode = (st.fastActive || st.fastArmed) && st.modeBeforeFast && !st.modeTouchedDuringFast ? st.modeBeforeFast : st.mode
   fresh.allowlist = st.allowlist
   fresh.queue = carry
   states.set(project, fresh)
+  // 极速在这条路径上同样算「退出」（本轮已死 ⇒ 新状态不继承武装，档位已按上式算好）：
+  // **状态变了就必须广播**——客户端档位靠 mode 事件、极速徽标靠 fast 事件，快照只在 SSE 建连时下发。
+  if (st.fastArmed || st.fastActive) emitFast(project, false)
+  if (fresh.mode !== st.mode) bus.emit({ type: "mode", project, mode: fresh.mode })
   bus.emit({ type: "error", project, message: "运行停滞且中止无效（已知内核压缩调用不接 AbortSignal 的缺陷），已强制释放；下一条消息将自动从上次落盘的会话继续（可在设置 → 性能 → 超时控制 中关闭）" })
   // zombie 运行不再走 finishRun（st.dead）——活跃行就地落 ended（终态行保留：面板行是会话级
   // 活动记录），免停在 running/转圈；此后该 agent 的一切回调已被 st.dead 闸门丢弃，不会复活行

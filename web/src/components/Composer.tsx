@@ -12,6 +12,10 @@ interface Props {
   /** 挂起会话中（后台池仍 live）：停止键让位给发送键——挂起期输入开放且优先执行（D1） */
   suspended: boolean
   queued: number
+  /** 极速模式（单轮）——武装中或本轮正在跑：true 时输入框上方显示徽标 */
+  fast: boolean
+  /** 徽标 × 的回调：取消极速武装（走服务端同一条 `/fast` 切换命令，不经本组件的发送路径） */
+  onFastCancel: () => void
   /** 当前项目（「＋ → 载入技能」拉技能清单用；null = 只列用户层技能） */
   project: string | null
   onSubmit: (text: string) => void
@@ -22,7 +26,7 @@ interface Props {
 }
 
 /** 输入区：Claude 风格 —— 圆润浮起输入框 + 珊瑚色发送键；键入 / 弹出斜线命令菜单 */
-export default function Composer({ disabled, disabledReason, running, suspended, queued, project, onSubmit, onAbort, prefill, onPrefillTaken }: Props) {
+export default function Composer({ disabled, disabledReason, running, suspended, queued, fast, onFastCancel, project, onSubmit, onAbort, prefill, onPrefillTaken }: Props) {
   const [text, setText] = useState("")
   const [menuOpen, setMenuOpen] = useState(true)
   const [sel, setSel] = useState(0)
@@ -189,6 +193,37 @@ export default function Composer({ disabled, disabledReason, running, suspended,
                 <span className={`text-xs ${i === sel ? "text-accent" : "text-t4"}`}>{c.desc}</span>
               </button>
             ))}
+          </div>
+        )}
+
+        {/* 极速模式（单轮）徽标：`/fast` 武装后出现，轮末由服务端解除（事件到达后徽标随之消失）。
+            两态区分「已消费（本轮在跑）」与「待命（下一条消息消费）」；× = 取消武装。 */}
+        {fast && (
+          <div className="mb-2 flex justify-center">
+            <Tooltip
+              side="top"
+              label="本轮临时开启 Full Auto 与超时控制；不写文档、不评审、不派子代理；改前读代码与跑测试保留"
+            >
+              <span
+                data-fast-badge
+                data-fast-state={running ? "running" : "armed"}
+                className="inline-flex items-center gap-2 rounded-full bg-amber-950 py-1 pl-2.5 pr-1 text-xs font-semibold tracking-wide text-amber-300"
+              >
+                ⚡ 极速模式 · {running ? "本轮运行中" : "下一轮生效"}
+                {/* 取消按钮只在「已武装、还没开跑」那一态给：轮中 `/api/command` 是 409（运行中不接受
+                    命令），渲染出来就是个点了必弹错误的死控件——本轮已经跑起来了，撤装由轮末自动完成。 */}
+                {!running && (
+                  <button
+                    data-fast-cancel
+                    onClick={onFastCancel}
+                    aria-label="取消极速模式（本轮不再提速）"
+                    className="flex h-4 w-4 items-center justify-center rounded-full text-amber-300/70 transition-colors hover:bg-amber-900 hover:text-amber-200"
+                  >
+                    ✕
+                  </button>
+                )}
+              </span>
+            </Tooltip>
           </div>
         )}
 

@@ -61,6 +61,8 @@ export interface PendingApproval {
   name: string
   args: Record<string, unknown>
   mode: ApprovalMode
+  /** 该项目当时是否处于极速模式（与 mode 同口径：快照播种的条目带上；事件建的条目不携该值） */
+  fast?: boolean
   diff?: DiffInfo | null
 }
 
@@ -133,6 +135,8 @@ export interface ProjectState {
   busy: boolean
   queued: number
   mode: ApprovalMode
+  /** 极速模式（单轮）：武装中或本轮正在跑（服务端 snapshot().fast 同口径，恒存在） */
+  fast: boolean
   planMode?: boolean
   provider: ProviderStatus | null
   /** 挂起会话中（后台池仍 live：会话仍忙、不含用户回合）；挂起期 busy 必为 true */
@@ -214,6 +218,14 @@ export interface SuspensionEvent extends ServerEvent {
   type: "suspension"
   active: boolean
   counts: SuspensionCounts | null
+}
+
+/** 极速模式（单轮）武装态事件（`/fast` 切换、轮末解除各下发一次）：
+ *  armed=true 已武装（下一条消息以极速轮跑）/ false 已解除；前端只认它，不做任何猜测性复位。 */
+export interface FastEvent extends ServerEvent {
+  type: "fast"
+  project: string
+  armed: boolean
 }
 
 /** 回合起止事件；digest=true 标示自动消化轮（后台报告收尾后内核自开的一轮，非用户发起）；
