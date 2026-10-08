@@ -597,6 +597,14 @@ body {
   margin: 1.2em 0;
 }
 
+/* ---------- KaTeX 公式（DocPanel 文档预览） ---------- */
+/* 360px 窄面板：超长块级公式横向滚动而非撑破容器 */
+.md .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2em 0;
+}
+
 /* 流式光标：珊瑚色细竖线 */
 .stream-cursor::after {
   content: "";
@@ -786,6 +794,13 @@ body {
   .doc-print .md table {
     display: table; /* 覆盖屏幕端的 display:block：纸上没有横向滚动条，溢出就是被裁掉 */
     width: 100%;
+  }
+
+  /* ---------- 公式不拆页 ---------- */
+  .doc-print .md .katex-display {
+    break-inside: avoid; /* 块级公式跨页拆断就废了 */
+    page-break-inside: avoid;
+    overflow: visible; /* 屏幕端的横向滚动在纸上无意义，放开让公式按自身宽度排出 */
   }
 
   /* ---------- 去屏幕交互残留 ---------- */

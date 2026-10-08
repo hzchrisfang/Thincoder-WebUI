@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
-import { marked } from "marked"
 import { api } from "../lib/api"
+import { docMarkdown } from "../lib/markdown"
 import Tooltip from "./Tooltip"
-
-marked.setOptions({ gfm: true, breaks: true })
 
 interface Props {
   project: string | null
@@ -78,7 +76,7 @@ export default function DocPanel({ project, files, onClose }: Props) {
   const html = useMemo(() => {
     if (kind !== "md" || !text) return ""
     try {
-      return marked.parse(text, { async: false }) as string
+      return docMarkdown.parse(text, { async: false }) as string
     } catch {
       return ""
     }

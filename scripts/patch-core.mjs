@@ -54,6 +54,13 @@ if (src.includes(MARKER)) {
   console.log(`[patch-core] 已打过补丁，跳过：${target}`)
   process.exit(0)
 }
+// 上游已内置同义清洗（core 0.10.3 起 #859：escape.mjs 的 sanitizeLoneSurrogates，
+// 在 embedding HTTP 请求层逐条净化 + 400 类错误 embedTolerant 逐条独试）⇒ 本补丁退役，
+// 不再叠加（双清洗无害但冗余，且会在无锚点的未来内核上误报）。
+if (src.includes("sanitizeLoneSurrogates")) {
+  console.log(`[patch-core] 上游已内置孤立代理清洗（#859），无需补丁：${target}`)
+  process.exit(0)
+}
 
 const entryAnchor = "export async function embed(embedder, texts, { signal } = {}) {\n  if (texts.length === 0) return []"
 if (!src.includes(entryAnchor)) {

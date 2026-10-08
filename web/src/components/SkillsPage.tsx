@@ -18,7 +18,9 @@ import type {
   SkillsResponse,
 } from "../lib/types"
 
-// marked 全局选项与 DocPanel.tsx:6 同源（同一份正文在两处渲染结果必须一致）
+// marked 全局实例（本页与 Timeline 共用）：文档预览（DocPanel）已迁独立实例并挂 KaTeX
+// 公式扩展（lib/markdown.ts），本页**有意不跟**——技能预览不含公式渲染（用户裁定 2026-10-08），
+// 基础选项 {gfm, breaks} 仍与那边同源，正文基础排版口径一致
 marked.setOptions({ gfm: true, breaks: true })
 
 /** 与内核 skills.mjs:18 的 NAME_RE 同源：内核不认的名字**静默忽略**（清单里凭空少一条），
