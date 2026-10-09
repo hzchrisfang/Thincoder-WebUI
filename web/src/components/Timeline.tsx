@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react"
-import { marked } from "marked"
 import type { TimelineItem } from "../lib/types"
+import { chatMarkdown, chatStreamMarkdown } from "../lib/markdown"
 import { copyText } from "../lib/clipboard"
 import ToolCard from "./ToolCard"
 import SuggestChips from "./SuggestChips"
 import TMark from "./TMark"
 import Tooltip from "./Tooltip"
-
-marked.setOptions({ gfm: true, breaks: true })
 
 /** 时间戳：今天的只显示时刻，跨天带日期 */
 function fmtTime(ts: number) {
@@ -21,16 +19,20 @@ function fmtTokens(n: number) {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
 }
 
-/** 助手消息里的代码块：渲染后给每个 <pre> 挂一个复制按钮（事件委托不易命中，直接在 DOM 上补） */
+/** 助手消息里的代码块：渲染后给每个 <pre> 挂一个复制按钮（事件委托不易命中，直接在 DOM 上补）
+ *
+ *  双态渲染：流式臂不挂 KaTeX（半截 TeX 保持字面，不闪红字），定稿臂整体解析并渲染公式。
+ *  切换点 = `streaming`（TimelineItem.done 派生），一轮结束即换公式。 */
 function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
   const boxRef = useRef<HTMLDivElement>(null)
   const html = useMemo(() => {
     try {
-      return marked.parse(text, { async: false }) as string
+      const engine = streaming ? chatStreamMarkdown : chatMarkdown
+      return engine.parse(text, { async: false }) as string
     } catch {
       return text
     }
-  }, [text])
+  }, [text, streaming])
 
   useEffect(() => {
     // 流式期间每帧都在变，等这轮结束再挂按钮
